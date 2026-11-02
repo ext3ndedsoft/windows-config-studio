@@ -84,6 +84,12 @@ set(APP_SOURCES
     src/app.rc
 )
 
+# rc.exe is not dependency-scanned under Ninja, so bumping app_version.h alone
+# used to leave a stale VERSIONINFO in the binary while the code reported the
+# new version. Pin the header as an explicit dependency of the resource.
+set_source_files_properties(src/app.rc PROPERTIES
+    OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/app_version.h;${CMAKE_CURRENT_SOURCE_DIR}/src/resources.pak")
+
 set(SOURCES
     ${CORE_SOURCES}
     ${TWEAKS_SOURCES}

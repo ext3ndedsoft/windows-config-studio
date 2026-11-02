@@ -3186,7 +3186,7 @@ async function exportProfile() {
 
     const payload = {
       app: "WindowsConfigStudio",
-      version: currentAppVersion || "3.5",
+      version: currentAppVersion || "",
       timestamp: new Date().toISOString(),
       theme: currentThemeAccent,
       tweaks: currentTweaks,
