@@ -649,9 +649,13 @@ void SystemTweaker::DetectSystemState() {
     } catch (...) {}
     m_sysConfig.autoKillHungApps = m_sysConfig.reduceHungAppTimeout;
 
-    // Persist browsers
+    // Persist browsers. Windows brings previous apps back when either of these is
+    // on: PersistBrowsers keeps the session list, RestartApps is the Windows 11
+    // "Restart apps" switch. The tweak is only honest when both are off,
+    // otherwise the UI reports "applied" while apps still reopen.
     DWORD persistBrowsers = RegGetDword(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced", L"PersistBrowsers", 1);
-    m_sysConfig.disablePersistBrowsers = (persistBrowsers == 0);
+    DWORD restartApps = RegGetDword(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon", L"RestartApps", 1);
+    m_sysConfig.disablePersistBrowsers = (persistBrowsers == 0 && restartApps == 0);
 
     // Finish setup (SCOOBE) suggestion
     DWORD scoobe = RegGetDword(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\UserProfileEngagement", L"ScoobeSystemSettingEnabled", 1);
