@@ -459,7 +459,7 @@ UpdateInfo UpdateManager::ParseTelegramChannel(const std::string& htmlContent, c
                     info.downloadUrl = genMatch[0].str();
                 } else {
                     // Fallback to GitHub releases repo
-                    info.downloadUrl = "https://github.com/ext3ndedsoft/wcs_release";
+                    info.downloadUrl = "https://github.com/ext3ndedsoft/windows-config-studio";
                 }
             }
 
@@ -773,7 +773,7 @@ UpdateInfo UpdateManager::CheckUpdatesSync(const std::string& customChannelOrUrl
         channelOrUrl = ConfigManager::Get().GetConfig().updateChannel;
     }
     if (channelOrUrl.empty()) {
-        channelOrUrl = "https://github.com/ext3ndedsoft/wcs_release";
+        channelOrUrl = "https://github.com/ext3ndedsoft/windows-config-studio";
     }
 
     UpdateInfo info;
@@ -990,7 +990,7 @@ void UpdateManager::OpenDownloadUrl() {
         }
         if (url.empty()) {
             std::string ch = m_lastInfo.channel;
-            if (ch.empty()) ch = "https://github.com/ext3ndedsoft/wcs_release";
+            if (ch.empty()) ch = "https://github.com/ext3ndedsoft/windows-config-studio";
             if (ch.rfind("http", 0) == 0) {
                 url = ch;
             } else {
@@ -1016,7 +1016,7 @@ void UpdateManager::OpenReleasePage() {
         url = m_lastInfo.releaseUrl;
         if (url.empty()) {
             std::string ch = m_lastInfo.channel;
-            if (ch.empty()) ch = "https://github.com/ext3ndedsoft/wcs_release/releases";
+            if (ch.empty()) ch = "https://github.com/ext3ndedsoft/windows-config-studio/releases";
             if (ch.rfind("http", 0) == 0) {
                 url = ch;
             } else {

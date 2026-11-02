@@ -142,7 +142,7 @@ const UPDATE = {
   currentVersion: "3.5.0",
   latestVersion: "3.5.0",
   available: false,
-  releaseUrl: "https://github.com/ext3ndedsoft/wcs_release/releases/latest",
+  releaseUrl: "https://github.com/ext3ndedsoft/windows-config-studio/releases/latest",
   changelog: "Текущая сборка содержит актуальные оптимизации BCD, таймеров, прерываний MSI и анти-телеметрии.",
   publishedAt: "2026-10-25",
   lastCheck: "только что"

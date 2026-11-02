@@ -551,8 +551,8 @@ const PRESET_DEFINITIONS = {
       usePlatformClockNo: true,
       usePlatformTickNo: true,
       bootuxDisabled: true,
-      ultimatePowerPlan: true,
-      disableCoreParking: true,
+      ultimatePowerPlan: false,
+      disableCoreParking: false,
       powerThrottling: true,
       gpuMsiMode: true,
       audioMsiMode: true,
@@ -588,7 +588,7 @@ const PRESET_DEFINITIONS = {
       usePlatformTickNo: true,
       bootuxDisabled: false,
       ultimatePowerPlan: false,
-      disableCoreParking: true,
+      disableCoreParking: false,
       powerThrottling: true,
       gpuMsiMode: true,
       audioMsiMode: true,
@@ -3115,7 +3115,7 @@ function applyConfigToUI(cfg) {
   setCheck("setting-autostartWithWindows", cfg.autostartWithWindows);
 
   setCheck("setting-autoCheckUpdates", cfg.autoCheckUpdates !== false);
-  setVal("setting-updateChannel", cfg.updateChannel || "https://github.com/ext3ndedsoft/wcs_release");
+  setVal("setting-updateChannel", cfg.updateChannel || "https://github.com/ext3ndedsoft/windows-config-studio");
 
   if (cfg.themeAccent) {
     setThemeAccent(cfg.themeAccent, false);
@@ -3526,7 +3526,7 @@ async function openUpdateModal(info) {
   const rawNxt = (update && (update.latestVersion || update.version)) || cur;
   const nxt = String(rawNxt).replace(/^v/i, "").trim();
   if (newVer) newVer.innerText = "v" + nxt;
-  if (source) source.innerText = update.channel || "https://github.com/ext3ndedsoft/wcs_release";
+  if (source) source.innerText = update.channel || "https://github.com/ext3ndedsoft/windows-config-studio";
   if (dateEl) dateEl.innerText = (update && update.date) ? `(${update.date})` : "";
 
   if (update && !update.available) {
@@ -3568,7 +3568,7 @@ function closeUpdateModal() {
 }
 
 function copyRepoUrl() {
-  const repoUrl = "https://github.com/ext3ndedsoft/wcs_release";
+  const repoUrl = "https://github.com/ext3ndedsoft/windows-config-studio";
   if (navigator.clipboard && navigator.clipboard.writeText) {
     navigator.clipboard.writeText(repoUrl).then(() => {
       showToast("Ссылка на GitHub скопирована в буфер обмена!", false);
@@ -3612,7 +3612,7 @@ async function openReleasePage() {
 
 async function manualCheckUpdates(autoOpenModal = false) {
   const btn = document.getElementById("tabBtnCheckNow") || document.getElementById("btnManualCheckUpdate");
-  const channel = "https://github.com/ext3ndedsoft/wcs_release";
+  const channel = "https://github.com/ext3ndedsoft/windows-config-studio";
   const lastTime = document.getElementById("tabLastCheckTimeLabel") || document.getElementById("lastCheckTimeLabel");
 
   if (btn) {

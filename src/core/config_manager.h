@@ -38,7 +38,7 @@ struct AppConfig {
 
     // In-App Updates & Releases Feed
     bool autoCheckUpdates = true;
-    std::string updateChannel = "https://github.com/ext3ndedsoft/wcs_release";
+    std::string updateChannel = "https://github.com/ext3ndedsoft/windows-config-studio";
 };
 
 #include <mutex>

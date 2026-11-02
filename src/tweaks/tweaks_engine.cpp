@@ -768,14 +768,14 @@ bool TweaksEngine::SetCoreParking(bool disable) {
         RunCommandHidden(L"powercfg -setdcvalueindex scheme_current 54533251-82be-4824-96c1-47b60b740d00 ea062031-0e34-4ff1-9b6d-eb10593ac08f 100");
         RunCommandHidden(L"powercfg -setacvalueindex scheme_current sub_processor CPMINCORES 100");
         RunCommandHidden(L"powercfg -setdcvalueindex scheme_current sub_processor CPMINCORES 100");
-        RunCommandHidden(L"powercfg -setacvalueindex scheme_current sub_processor PROCTHROTTLEMIN 100");
-        RunCommandHidden(L"powercfg -setdcvalueindex scheme_current sub_processor PROCTHROTTLEMIN 100");
+        // Do NOT touch PROCTHROTTLEMIN here. Unparking cores is about the
+        // scheduler; pinning the minimum processor state at 100% is a separate
+        // decision that keeps the CPU boosting at idle and the fans loud.
         RunCommandHidden(L"powercfg -setactive scheme_current");
     } else {
         RunCommandHidden(L"powercfg -setacvalueindex scheme_current 54533251-82be-4824-96c1-47b60b740d00 0cc5b647-c360-45f8-8422-040845a70656 10");
         RunCommandHidden(L"powercfg -setdcvalueindex scheme_current 54533251-82be-4824-96c1-47b60b740d00 0cc5b647-c360-45f8-8422-040845a70656 100");
         RunCommandHidden(L"powercfg -setacvalueindex scheme_current sub_processor CPMINCORES 10");
-        RunCommandHidden(L"powercfg -setacvalueindex scheme_current sub_processor PROCTHROTTLEMIN 5");
         RunCommandHidden(L"powercfg -setactive scheme_current");
     }
     return true;
@@ -1436,8 +1436,12 @@ bool TweaksEngine::ApplyPreset(PresetType preset, std::string& outStatus) {
         m_state.bootuxDisabled = true;
         m_state.win32PrioritySeparation = true;
         m_state.win32PriorityValue = 0x26; // 38 dec: variable, short quantum, 2:1 foreground boost
-        m_state.ultimatePowerPlan = true;
-        m_state.disableCoreParking = true;
+        // Power plan and core parking stay as Windows left them: the Ultimate
+        // scheme pins the CPU at its minimum frequency of 100%, so an idle PC
+        // keeps boosting and the fans never spin down. Both are still available
+        // as manual toggles for people who know what they cost.
+        m_state.ultimatePowerPlan = false;
+        m_state.disableCoreParking = false;
         m_state.powerThrottling = true;
         m_state.gpuMsiMode = true;
         m_state.audioMsiMode = true;
@@ -1536,7 +1540,7 @@ bool TweaksEngine::ApplyPreset(PresetType preset, std::string& outStatus) {
         m_state.win32PrioritySeparation = true;
         m_state.win32PriorityValue = 0x26;  // 0x26 foreground priority boost
         m_state.ultimatePowerPlan = false;  // preserve active / balanced power scheme
-        m_state.disableCoreParking = true;  // Core Parking optimized: unpark cores on AC
+        m_state.disableCoreParking = false; // unparking keeps the CPU hot at idle; manual toggle instead
         m_state.powerThrottling = true;     // Power Throttling off for foreground gaming stability
         m_state.gpuMsiMode = true;
         m_state.audioMsiMode = true;
