@@ -133,7 +133,6 @@ void RunLiveTweakAudit() {
     PrintAuditRow("MMCSS Games Priority Scheduling", ts.mmcssGamesPriority, "SystemResponsiveness=0, GPU Priority=8");
     PrintAuditRow("Network Throttling Disabled", ts.disableNetworkThrottling, "SystemProfile NetworkThrottlingIndex=0xFFFFFFFF");
     PrintAuditRow("TCP NoDelay & AckFrequency (1)", ts.tcpNoDelay, "Tcpip Parameters Interfaces TcpAckFrequency=1");
-    PrintAuditRow("TCP AutoTuning Level Normal", ts.tcpAutoTuning, "netsh int tcp global autotuninglevel=normal");
     PrintAuditRow("Kernel Paging Locked in RAM", ts.disablePagingExecutive, "Memory Management DisablePagingExecutive=1");
     PrintAuditRow("Gaming File Cache Mode (0)", ts.largeSystemCacheDisabled, "Memory Management LargeSystemCache=0");
     PrintAuditRow("1:1 Linear Flat Mouse Curve (MarkC)", ts.flatMouseCurve, "SmoothMouseX/YCurve flat linear table");

@@ -46,7 +46,6 @@ struct TweakState {
     // 4. Network & Ping
     bool tcpNoDelay = false;
     bool tcpAckFrequency = false;
-    bool tcpAutoTuning = false;
     bool defaultTTL64 = false;
     bool optimalMTU = false;
 
@@ -105,7 +104,6 @@ public:
 
     bool SetTCPNoDelay(bool enable);
     bool SetTCPAckFrequency(bool enable);
-    bool SetTCPAutoTuning(bool enable);
     bool SetDefaultTTL(bool enable64);
     bool SetNetworkMTU(bool enable1500);
     bool FlushDNS();

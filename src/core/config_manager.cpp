@@ -151,7 +151,6 @@ bool ConfigManager::Load() {
         t.disableNetworkThrottling = tj.value("disableNetworkThrottling", t.disableNetworkThrottling);
 
         t.tcpNoDelay          = tj.value("tcpNoDelay", t.tcpNoDelay);
-        t.tcpAutoTuning       = tj.value("tcpAutoTuning", t.tcpAutoTuning);
 
         t.disablePagingExecutive = tj.value("disablePagingExecutive", t.disablePagingExecutive);
         t.largeSystemCacheDisabled = tj.value("largeSystemCacheDisabled", t.largeSystemCacheDisabled);
@@ -220,7 +219,6 @@ bool ConfigManager::Save() {
         { "mmcssGamesPriority", t.mmcssGamesPriority },
         { "disableNetworkThrottling", t.disableNetworkThrottling },
         { "tcpNoDelay", t.tcpNoDelay },
-        { "tcpAutoTuning", t.tcpAutoTuning },
         { "disablePagingExecutive", t.disablePagingExecutive },
         { "largeSystemCacheDisabled", t.largeSystemCacheDisabled },
         { "flatMouseCurve", t.flatMouseCurve },

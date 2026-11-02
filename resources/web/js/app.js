@@ -498,7 +498,6 @@ const TWEAK_NAMES = {
   disableNetworkThrottling: "Снятие сетевого ограничения Windows",
   tcpNoDelay: "Мгновенная отправка пакетов (TCP NoDelay)",
   tcpAckFrequency: "Отключение задержки подтверждений TCP (AckFrequency)",
-  tcpAutoTuning: "Автоподстройка окна приема TCP (Auto-Tuning)",
   defaultTTL64: "Единый TTL пакетов (64 вместо 128)",
   optimalMTU: "MTU 1500 для физических адаптеров",
   bootuxDisabled: "Отключение анимации загрузки Windows",
@@ -530,7 +529,6 @@ const TWEAK_DESCRIPTIONS = {
   tcpAckFrequency: "Убирает задержку подтверждений TCP на выбранном интерфейсе - важно для игр с малым трафиком.",
   bootuxDisabled: "Убирает заставку и анимацию загрузки - система доходит до рабочего стола чуть быстрее.",
   powerThrottling: "Запрещает Windows искусственно замедлять фоновые процессы ради экономии энергии.",
-  tcpAutoTuning: "Оптимизирует размер окна TCP и распределяет сетевой трафик между ядрами процессора без очередей пакетов.",
   flatMouseCurve: "Полностью отключает системное ускорение (акселерацию) курсора, обеспечивая честное движение 1:1.",
   keyboardMaxSpeed: "Устанавливает минимальную задержку перед повтором нажатий и максимальную скорость повтора клавиш.",
   disableTelemetry: "Останавливает фоновую службу сбора диагностических данных (DiagTrack), устраняя фоновую активность диска и процессора.",
@@ -563,7 +561,6 @@ const PRESET_DEFINITIONS = {
       disableNetworkThrottling: true,
       tcpNoDelay: true,
       tcpAckFrequency: true,
-      tcpAutoTuning: true,
       defaultTTL64: true,
       optimalMTU: true,
       disablePagingExecutive: true,
@@ -599,7 +596,6 @@ const PRESET_DEFINITIONS = {
       disableNetworkThrottling: true,
       tcpNoDelay: true,
       tcpAckFrequency: true,
-      tcpAutoTuning: true,
       defaultTTL64: false,
       optimalMTU: true,
       disablePagingExecutive: false,
@@ -635,7 +631,6 @@ const PRESET_DEFINITIONS = {
       disableNetworkThrottling: false,
       tcpNoDelay: false,
       tcpAckFrequency: false,
-      tcpAutoTuning: false,
       defaultTTL64: false,
       optimalMTU: false,
       disablePagingExecutive: false,
@@ -2337,7 +2332,6 @@ function syncTweaksUI(t) {
 
   setCheck("tweak-tcpNoDelay", t.tcpNoDelay);
   setCheck("tweak-tcpAckFrequency", t.tcpAckFrequency);
-  setCheck("tweak-tcpAutoTuning", t.tcpAutoTuning);
   setCheck("tweak-defaultTTL64", t.defaultTTL64 || t.defaultTtl);
 
   setCheck("tweak-flatMouseCurve", t.flatMouseCurve);

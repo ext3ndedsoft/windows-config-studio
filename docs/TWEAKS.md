@@ -41,7 +41,6 @@
 | Твик | Механизм | Статус |
 |------|----------|--------|
 | `tcpNoDelay` / `tcpAckFrequency` | `TcpAckFrequency=1`, `TCPNoDelay=1` **на каждом интерфейсе**; откат удаляет только существующие значения | РАБОТАЕТ |
-| `tcpAutoTuning` | `netsh int tcp set global autotuninglevel=disabled`, откат `normal` | РАБОТАЕТ |
 | `disableNetworkThrottling` | `NetworkThrottlingIndex=0xFFFFFFFF`, откат `10` | РАБОТАЕТ |
 | `defaultTTL64` | `DefaultTTL=64`, откат — удаление (система вернётся к 128) | РАБОТАЕТ |
 | `optimalMTU` | MTU 1500 только физическим Ethernet/Wi-Fi, с сохранением прежнего значения | РАБОТАЕТ. Раньше писал 1500 даже в VPN/PPPoE |

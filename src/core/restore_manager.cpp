@@ -131,7 +131,6 @@ bool RestoreManager::ExportProfile(const std::wstring& filePath, std::string& ou
     file << "mmcss_games=" << (s.mmcssGamesPriority ? 1 : 0) << "\n";
     file << "network_throttling=" << (s.disableNetworkThrottling ? 1 : 0) << "\n";
     file << "tcp_nodelay=" << (s.tcpNoDelay ? 1 : 0) << "\n";
-    file << "tcp_autotuning=" << (s.tcpAutoTuning ? 1 : 0) << "\n";
     file << "disable_paging_exec=" << (s.disablePagingExecutive ? 1 : 0) << "\n";
     file << "large_sys_cache_dis=" << (s.largeSystemCacheDisabled ? 1 : 0) << "\n";
     file << "flat_mouse=" << (s.flatMouseCurve ? 1 : 0) << "\n";
@@ -176,7 +175,6 @@ bool RestoreManager::ImportProfile(const std::wstring& filePath, std::string& ou
         else if (key == "mmcss_games") s.mmcssGamesPriority = bVal;
         else if (key == "network_throttling") s.disableNetworkThrottling = bVal;
         else if (key == "tcp_nodelay") s.tcpNoDelay = bVal;
-        else if (key == "tcp_autotuning") s.tcpAutoTuning = bVal;
         else if (key == "disable_paging_exec") s.disablePagingExecutive = bVal;
         else if (key == "large_sys_cache_dis") s.largeSystemCacheDisabled = bVal;
         else if (key == "flat_mouse") s.flatMouseCurve = bVal;

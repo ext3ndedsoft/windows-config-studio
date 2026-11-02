@@ -544,7 +544,6 @@ void TweaksEngine::DetectFastState() {
     }
     m_state.tcpNoDelay = anyNoDelay;
     m_state.tcpAckFrequency = anyAckFreq;
-    m_state.tcpAutoTuning = false; // default autotuninglevel=normal, verified via netsh in DetectCurrentStateAsync
 
     // 16. Network TTL & MTU
     DWORD ttlVal = 128;
@@ -582,11 +581,15 @@ void TweaksEngine::DetectCurrentStateAsync(std::function<void()> onComplete) {
         // Detailed verification of BCD, PCI, and network parameters
         DetectFastState();
 
-        // Verify TCP auto-tuning level. The actual label is
-        // "Receive Window Auto-Tuning Level" (netsh never prints a single
-        // "autotuninglevel" token), so the line is matched and the value parsed
-        // after the colon. netsh output is English here; on a localized Windows
-        // the label differs and the state simply stays untouched.
+        // Repair Receive Window Auto-Tuning.
+        //
+        // Builds up to 3.6.0 shipped a "tcpAutoTuning" switch that set
+        // autotuninglevel=disabled. That setting caps the receive window and
+        // therefore multiplies throughput down on any high-latency path: with a
+        // fixed window, goodput is roughly window/RTT, so a 230 ms route to the
+        // nearest foreign CDN collapses to ~1 MB/s no matter how fast the link
+        // is. The switch is gone; this restores the Windows default for every
+        // system that still carries the damage.
         std::string netshOut;
         if (RunCommandCapture(L"netsh int tcp show global", netshOut)) {
             std::string netshLower = netshOut;
@@ -598,13 +601,11 @@ void TweaksEngine::DetectCurrentStateAsync(std::function<void()> onComplete) {
                     continue;
                 }
                 size_t colon = line.rfind(':');
-                if (colon == std::string::npos) continue;
+                if (colon == std::string::npos) break;
                 std::string level = line.substr(colon + 1);
-                std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
-                if (level.find("disabled") != std::string::npos || level.find("restricted") != std::string::npos) {
-                    m_state.tcpAutoTuning = true;  // tweak active: autotuning off / limited
-                } else if (level.find("normal") != std::string::npos) {
-                    m_state.tcpAutoTuning = false; // normal is the Windows default
+                if (level.find("disabled") != std::string::npos ||
+                    level.find("restricted") != std::string::npos) {
+                    RunCommandHidden(L"netsh int tcp set global autotuninglevel=normal");
                 }
                 break;
             }
@@ -1079,20 +1080,7 @@ bool TweaksEngine::SetTCPAckFrequency(bool enable) {
     return SetTCPNoDelay(enable);
 }
 
-bool TweaksEngine::SetTCPAutoTuning(bool enable) {
-    std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
-    m_state.tcpAutoTuning = enable;
-    // Valid levels: disabled | highlyrestricted | restricted | normal (default) | experimental.
-    // "normal" is the Windows default, so it is the revert value. rss=enabled is the
-    // default state of the stack, hence it is left untouched by the revert path.
-    if (enable) {
-        RunCommandHidden(L"netsh int tcp set global autotuninglevel=disabled");
-        RunCommandHidden(L"netsh int tcp set global rss=enabled");
-    } else {
-        RunCommandHidden(L"netsh int tcp set global autotuninglevel=normal");
-    }
-    return true;
-}
+
 
 bool TweaksEngine::FlushDNS() {
     return RunCommandHidden(L"ipconfig /flushdns");
@@ -1386,7 +1374,6 @@ bool TweaksEngine::ApplyAll(std::string& outStatus) {
     SetNetworkThrottling(m_state.disableNetworkThrottling);
     SetTCPNoDelay(m_state.tcpNoDelay);
     SetTCPAckFrequency(m_state.tcpAckFrequency);
-    SetTCPAutoTuning(m_state.tcpAutoTuning);
     SetDefaultTTL(m_state.defaultTTL64);
     SetNetworkMTU(m_state.optimalMTU);
     SetDisablePagingExecutive(m_state.disablePagingExecutive);
@@ -1454,7 +1441,6 @@ bool TweaksEngine::ApplyPreset(PresetType preset, std::string& outStatus) {
         m_state.disableNetworkThrottling = true; // NetworkThrottlingIndex = 0xFFFFFFFF
         m_state.tcpNoDelay = true;         // TCPNoDelay = 1, TcpAckFrequency = 1
         m_state.tcpAckFrequency = true;
-        m_state.tcpAutoTuning = true;
         m_state.defaultTTL64 = true;
         m_state.optimalMTU = true;
         m_state.disablePagingExecutive = true;   // DisablePagingExecutive = 1
@@ -1553,7 +1539,6 @@ bool TweaksEngine::ApplyPreset(PresetType preset, std::string& outStatus) {
         m_state.disableNetworkThrottling = true; // NetworkThrottlingIndex = 0xFFFFFFFF
         m_state.tcpNoDelay = true;         // TCPNoDelay = 1, TcpAckFrequency = 1
         m_state.tcpAckFrequency = true;
-        m_state.tcpAutoTuning = true;
         m_state.defaultTTL64 = false;
         m_state.optimalMTU = true;
         m_state.disablePagingExecutive = false; // preserve RAM for streaming / multitasking (OBS/Discord)
@@ -1668,7 +1653,6 @@ bool TweaksEngine::RevertToDefaults(std::string& outStatus) {
     m_state.disableNetworkThrottling = false; // NetworkThrottlingIndex = 10
     m_state.tcpNoDelay = false;               // Nagle algorithm default
     m_state.tcpAckFrequency = false;
-    m_state.tcpAutoTuning = false;
     m_state.defaultTTL64 = false;
     m_state.optimalMTU = false;
     m_state.disablePagingExecutive = false;   // DisablePagingExecutive = 0

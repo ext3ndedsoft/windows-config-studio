@@ -654,7 +654,6 @@ nlohmann::json NativeBridge::HandleGetTweaksState() {
 
     t["tcpNoDelay"] = state.tcpNoDelay;
     t["tcpAckFrequency"] = state.tcpAckFrequency;
-    t["tcpAutoTuning"] = state.tcpAutoTuning;
     t["defaultTTL64"] = state.defaultTTL64;
     t["defaultTtl"] = state.defaultTTL64;
     t["optimalMTU"] = state.optimalMTU;
@@ -975,7 +974,6 @@ nlohmann::json NativeBridge::HandleSetTweak(const nlohmann::json& params) {
     else if (tweakId == "disableNetworkThrottling" || tweakId == "networkThrottling") ok = engine.SetNetworkThrottling(val);
     else if (tweakId == "tcpNoDelay") ok = engine.SetTCPNoDelay(val);
     else if (tweakId == "tcpAckFrequency") ok = engine.SetTCPAckFrequency(val);
-    else if (tweakId == "tcpAutoTuning") ok = engine.SetTCPAutoTuning(val);
     else if (tweakId == "defaultTTL64" || tweakId == "defaultTtl") ok = engine.SetDefaultTTL(val);
     else if (tweakId == "optimalMTU") ok = engine.SetNetworkMTU(val);
     else if (tweakId == "disablePagingExecutive") ok = engine.SetDisablePagingExecutive(val);
