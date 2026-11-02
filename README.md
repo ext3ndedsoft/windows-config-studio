@@ -6,7 +6,6 @@
 
 <div align="center">
 
-[![Build](https://github.com/ext3ndedsoft/windows-config-studio/actions/workflows/build.yml/badge.svg)](https://github.com/ext3ndedsoft/windows-config-studio/actions/workflows/build.yml)
 [![Release](https://img.shields.io/github/v/release/ext3ndedsoft/windows-config-studio?label=release&color=22d3ee)](https://github.com/ext3ndedsoft/windows-config-studio/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078d4)](#требования)
 [![C++](https://img.shields.io/badge/C%2B%2B-20-00599c)](https://en.cppreference.com/w/cpp/20)
