@@ -60,8 +60,13 @@ bool MemoryCleaner::EnablePrivilege(const wchar_t* privName) {
 }
 
 bool MemoryCleaner::PurgeStandbyList() {
+    // NtSetSystemInformation(SystemMemoryListInformation) checks
+    // SeProfileSingleProcessPrivilege; if it cannot be enabled the purge is a no-op
+    // that returns STATUS_PRIVILEGE_NOT_HELD. Report it instead of pretending success.
     EnablePrivilege(L"SeIncreaseQuotaPrivilege");
-    EnablePrivilege(L"SeProfileSingleProcessPrivilege");
+    if (!EnablePrivilege(L"SeProfileSingleProcessPrivilege")) {
+        return false;
+    }
 
     HMODULE hNtdll = GetModuleHandleW(L"ntdll.dll");
     if (!hNtdll) return false;
@@ -85,17 +90,37 @@ bool MemoryCleaner::EmptyProcessWorkingSets() {
     ScopedHandle hSnap(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0));
     if (!hSnap.IsValid()) return false;
 
+    // Core OS and security processes are never trimmed: forcing their working sets
+    // to disk causes stalls and can destabilise the session.
+    static const wchar_t* kCriticalProcesses[] = {
+        L"system", L"registry", L"smss.exe", L"csrss.exe", L"wininit.exe",
+        L"winlogon.exe", L"services.exe", L"lsass.exe", L"lsaiso.exe",
+        L"fontdrvhost.exe", L"dwm.exe"
+    };
+
+    size_t trimmedCount = 0;
     PROCESSENTRY32W pe = { sizeof(pe) };
     if (Process32FirstW(hSnap.Get(), &pe)) {
         do {
             if (pe.th32ProcessID <= 4) continue; // Skip System and Idle
-            ScopedHandle hProcess(OpenProcess(PROCESS_SET_QUOTA | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pe.th32ProcessID));
+            bool critical = false;
+            for (const wchar_t* criticalName : kCriticalProcesses) {
+                if (_wcsicmp(pe.szExeFile, criticalName) == 0) {
+                    critical = true;
+                    break;
+                }
+            }
+            if (critical) continue;
+
+            ScopedHandle hProcess(OpenProcess(PROCESS_SET_QUOTA | PROCESS_QUERY_INFORMATION, FALSE, pe.th32ProcessID));
             if (hProcess.IsValid()) {
-                SetProcessWorkingSetSize(hProcess.Get(), (SIZE_T)-1, (SIZE_T)-1);
+                if (SetProcessWorkingSetSize(hProcess.Get(), (SIZE_T)-1, (SIZE_T)-1)) {
+                    trimmedCount++;
+                }
             }
         } while (Process32NextW(hSnap.Get(), &pe));
     }
-    return true;
+    return trimmedCount > 0;
 }
 
 bool MemoryCleaner::TrimProcessesWorkingSet(size_t& outBytesFreed, std::string& outStatus) {
@@ -103,7 +128,7 @@ bool MemoryCleaner::TrimProcessesWorkingSet(size_t& outBytesFreed, std::string& 
     GlobalMemoryStatusEx(&memBefore);
 
     EnablePrivilege(L"SeIncreaseQuotaPrivilege");
-    EmptyProcessWorkingSets();
+    bool trimmed = EmptyProcessWorkingSets();
 
     MEMORYSTATUSEX memAfter = { sizeof(memAfter) };
     GlobalMemoryStatusEx(&memAfter);
@@ -112,6 +137,14 @@ bool MemoryCleaner::TrimProcessesWorkingSet(size_t& outBytesFreed, std::string& 
         outBytesFreed = (size_t)(memAfter.ullAvailPhys - memBefore.ullAvailPhys);
     } else {
         outBytesFreed = 0;
+    }
+
+    if (!trimmed) {
+        outBytesFreed = 0;
+        outStatus = "Не удалось оптимизировать рабочие наборы процессов: нет доступа ни к одному процессу";
+        m_lastActionStatus = outStatus;
+        QueryDetailedStats(true);
+        return false;
     }
 
     m_lastFreedBytes = outBytesFreed;
@@ -134,8 +167,7 @@ bool MemoryCleaner::ClearSystemCache(size_t& outBytesFreed, std::string& outStat
     GlobalMemoryStatusEx(&memBefore);
 
     EnablePrivilege(L"SeIncreaseQuotaPrivilege");
-    EnablePrivilege(L"SeProfileSingleProcessPrivilege");
-    PurgeStandbyList();
+    bool purged = PurgeStandbyList();
 
     MEMORYSTATUSEX memAfter = { sizeof(memAfter) };
     GlobalMemoryStatusEx(&memAfter);
@@ -144,6 +176,14 @@ bool MemoryCleaner::ClearSystemCache(size_t& outBytesFreed, std::string& outStat
         outBytesFreed = (size_t)(memAfter.ullAvailPhys - memBefore.ullAvailPhys);
     } else {
         outBytesFreed = 0;
+    }
+
+    if (!purged) {
+        outBytesFreed = 0;
+        outStatus = "Standby-кэш не очищен: привилегия SeProfileSingleProcessPrivilege недоступна или вызов NtSetSystemInformation отклонен";
+        m_lastActionStatus = outStatus;
+        QueryDetailedStats(true);
+        return false;
     }
 
     m_lastFreedBytes = outBytesFreed;
@@ -166,10 +206,9 @@ bool MemoryCleaner::CleanAll(size_t& outBytesFreed, std::string& outStatus) {
     GlobalMemoryStatusEx(&memBefore);
 
     EnablePrivilege(L"SeIncreaseQuotaPrivilege");
-    EnablePrivilege(L"SeProfileSingleProcessPrivilege");
 
-    EmptyProcessWorkingSets();
-    PurgeStandbyList();
+    bool trimmed = EmptyProcessWorkingSets();
+    bool purged = PurgeStandbyList();
 
     MEMORYSTATUSEX memAfter = { sizeof(memAfter) };
     GlobalMemoryStatusEx(&memAfter);
@@ -180,11 +219,23 @@ bool MemoryCleaner::CleanAll(size_t& outBytesFreed, std::string& outStatus) {
         outBytesFreed = 0;
     }
 
+    if (!trimmed && !purged) {
+        outBytesFreed = 0;
+        outStatus = "Очистка памяти не выполнена: привилегия SeProfileSingleProcessPrivilege недоступна и рабочие наборы процессов защищены";
+        m_lastActionStatus = outStatus;
+        QueryDetailedStats(true);
+        return false;
+    }
+
     m_lastFreedBytes = outBytesFreed;
     m_totalSessionFreedBytes += outBytesFreed;
 
-    char buf[128];
-    if (outBytesFreed > 0) {
+    char buf[256];
+    if (!purged) {
+        snprintf(buf, sizeof(buf), "Рабочие наборы оптимизированы, но standby-кэш очистить не удалось (нет привилегии SeProfileSingleProcessPrivilege)");
+    } else if (!trimmed) {
+        snprintf(buf, sizeof(buf), "Standby-кэш очищен, рабочие наборы процессов изменены не были (нет доступа)");
+    } else if (outBytesFreed > 0) {
         snprintf(buf, sizeof(buf), "Полная оптимизация памяти выполнена");
     } else {
         snprintf(buf, sizeof(buf), "ОЗУ и кэш в оптимальном состоянии");
@@ -243,7 +294,8 @@ DetailedMemoryStats MemoryCleaner::QueryDetailedStats(bool forceFresh) {
         double pageSizeBytes = (double)pi.PageSize;
         s.standbyRAM_GB = ((double)pi.SystemCache * pageSizeBytes) / (1024.0 * 1024.0 * 1024.0);
     } else {
-        s.standbyRAM_GB = s.totalRAM_GB * 0.15; // Safe baseline fallback
+        // Never invent a memory figure: report nothing rather than a made-up percentage.
+        s.standbyRAM_GB = 0.0;
     }
 
     s_cachedStats = s;

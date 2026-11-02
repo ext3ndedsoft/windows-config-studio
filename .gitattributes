@@ -1,0 +1,21 @@
+* text=auto eol=lf
+
+*.c   text eol=lf
+*.h   text eol=lf
+*.cpp text eol=lf
+*.hpp text eol=lf
+*.md  text eol=lf
+*.js  text eol=lf
+*.css text eol=lf
+*.html text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+
+*.png  binary
+*.jpg  binary
+*.ico  binary
+*.dll  binary
+*.exe  binary
+*.pak  binary
+*.lib  binary
+*.pdb  binary

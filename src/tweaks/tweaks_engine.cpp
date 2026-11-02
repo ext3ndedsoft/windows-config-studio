@@ -13,6 +13,7 @@
 #include <sstream>
 #include <iostream>
 #include <thread>
+#include <map>
 #include <tlhelp32.h>
 
 #pragma comment(lib, "advapi32.lib")
@@ -337,10 +338,17 @@ void TweaksEngine::DetectFastState() {
             m_state.usePlatformTickNo = false;
         }
 
-        size_t bxPos = bcdLower.find("bootux");
+        // Documented element is "bootuxdisabled On|Off"; the element name itself
+        // contains "disabled", so the value must be read after the name, not
+        // searched for inside it.
+        size_t bxPos = bcdLower.find("bootuxdisabled");
         if (bxPos != std::string::npos) {
-            std::string sub = bcdLower.substr(bxPos, 40);
-            m_state.bootuxDisabled = (sub.find("disabled") != std::string::npos);
+            std::string tail = bcdLower.substr(bxPos + 13, 16);
+            m_state.bootuxDisabled = (tail.find(" on") != std::string::npos || tail.find(" yes") != std::string::npos);
+        } else if ((bxPos = bcdLower.find("bootux ")) != std::string::npos) {
+            // Legacy Windows 7/8 spelling "bootux Disabled"
+            std::string tail = bcdLower.substr(bxPos + 7, 16);
+            m_state.bootuxDisabled = (tail.find("disabled") != std::string::npos);
         } else {
             m_state.bootuxDisabled = false;
         }
@@ -422,11 +430,11 @@ void TweaksEngine::DetectFastState() {
         m_state.disablePagingExecutive = (pagingExec == 1);
     }
     DWORD sysCache = 0;
-    if (RegReadDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management", L"LargeSystemCache", sysCache)) {
-        m_state.largeSystemCacheDisabled = (sysCache == 0); // 0 is gaming mode!
-    } else {
-        m_state.largeSystemCacheDisabled = true; // default Windows desktop is 0
-    }
+    // Absent value is already the desktop default (Windows treats it as 0), so
+    // absence means "tweak not applied" - the same rule SystemTweaker uses.
+    m_state.largeSystemCacheDisabled =
+        RegReadDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management", L"LargeSystemCache", sysCache)
+        && sysCache == 0;
     DWORD ioLimit = 0;
     if (RegReadDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management", L"IoPageLockLimit", ioLimit)) {
         m_state.ioPageLockLimit = (ioLimit > 0);
@@ -536,7 +544,7 @@ void TweaksEngine::DetectFastState() {
     }
     m_state.tcpNoDelay = anyNoDelay;
     m_state.tcpAckFrequency = anyAckFreq;
-    m_state.tcpAutoTuning = true; // Default true, verified via netsh in DetectCurrentStateAsync
+    m_state.tcpAutoTuning = false; // default autotuninglevel=normal, verified via netsh in DetectCurrentStateAsync
 
     // 16. Network TTL & MTU
     DWORD ttlVal = 128;
@@ -574,21 +582,31 @@ void TweaksEngine::DetectCurrentStateAsync(std::function<void()> onComplete) {
         // Detailed verification of BCD, PCI, and network parameters
         DetectFastState();
 
-        // Verify TCP auto-tuning level
+        // Verify TCP auto-tuning level. The actual label is
+        // "Receive Window Auto-Tuning Level" (netsh never prints a single
+        // "autotuninglevel" token), so the line is matched and the value parsed
+        // after the colon. netsh output is English here; on a localized Windows
+        // the label differs and the state simply stays untouched.
         std::string netshOut;
         if (RunCommandCapture(L"netsh int tcp show global", netshOut)) {
             std::string netshLower = netshOut;
             std::transform(netshLower.begin(), netshLower.end(), netshLower.begin(), ::tolower);
-            if (netshLower.find("autotuninglevel") != std::string::npos) {
-                size_t pos = netshLower.find("autotuninglevel");
-                std::string sub = netshLower.substr(pos, 50);
-                if (sub.find("disabled") != std::string::npos) {
-                    std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
-                    m_state.tcpAutoTuning = false;
-                } else if (sub.find("normal") != std::string::npos || sub.find("restricted") != std::string::npos || sub.find("experimental") != std::string::npos) {
-                    std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
-                    m_state.tcpAutoTuning = true;
+            std::istringstream lines(netshLower);
+            std::string line;
+            while (std::getline(lines, line)) {
+                if (line.find("auto-tuning") == std::string::npos && line.find("auto tuning") == std::string::npos) {
+                    continue;
                 }
+                size_t colon = line.rfind(':');
+                if (colon == std::string::npos) continue;
+                std::string level = line.substr(colon + 1);
+                std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
+                if (level.find("disabled") != std::string::npos || level.find("restricted") != std::string::npos) {
+                    m_state.tcpAutoTuning = true;  // tweak active: autotuning off / limited
+                } else if (level.find("normal") != std::string::npos) {
+                    m_state.tcpAutoTuning = false; // normal is the Windows default
+                }
+                break;
             }
         }
 
@@ -602,10 +620,16 @@ void TweaksEngine::DetectCurrentStateAsync(std::function<void()> onComplete) {
 bool TweaksEngine::SetTimerResolution(bool enable) {
     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
     m_state.timerResolution05ms = enable;
+    TimerResolutionService& svc = TimerResolutionService::Get();
+    if (enable == svc.IsActive()) {
+        return true; // already in the requested state - idempotent no-op
+    }
     if (enable) {
-        TimerResolutionService::Get().Start(0.500f);
+        svc.Start(0.500f); // NtSetTimerResolution(5000, TRUE)
     } else {
-        TimerResolutionService::Get().Stop();
+        // Stop() joins the worker, which releases its request with
+        // NtSetTimerResolution(..., FALSE), so no 0.5 ms lock is left dangling.
+        svc.Stop();
     }
     return true;
 }
@@ -651,19 +675,24 @@ bool TweaksEngine::SetPlatformTick(bool enable) {
 bool TweaksEngine::SetBootUX(bool disable) {
     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
     m_state.bootuxDisabled = disable;
+    // The old HKLM\...\Session Manager\BootUX value is a dead leftover (present but
+    // empty on Windows 10/11) and ...\Control\BootUX\BootUIEnabled does not exist.
+    // Boot graphics are controlled by the documented BCD element "bootuxdisabled on|off".
     if (disable) {
-        return RunCommandHidden(L"bcdedit /set {current} bootux disabled") ||
-               RunCommandHidden(L"bcdedit /set bootux disabled");
+        return RunCommandHidden(L"bcdedit /set {current} bootuxdisabled on") ||
+               RunCommandHidden(L"bcdedit /set {current} bootux disabled");
     } else {
-        return RunCommandHidden(L"bcdedit /deletevalue {current} bootux") ||
-               RunCommandHidden(L"bcdedit /deletevalue bootux");
+        return RunCommandHidden(L"bcdedit /deletevalue {current} bootuxdisabled") ||
+               RunCommandHidden(L"bcdedit /deletevalue {current} bootux");
     }
 }
 
 bool TweaksEngine::SetWin32PrioritySeparation(bool enable0x26, DWORD customVal) {
     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
     m_state.win32PrioritySeparation = enable0x26;
-    DWORD val = enable0x26 ? (customVal ? customVal : 0x26) : 2;
+    // 0x26 = variable-length quantum, short, 2:1 foreground boost (preset value).
+    // 2 is the Windows client default, so the "enable" path must never accept it.
+    DWORD val = enable0x26 ? ((customVal && customVal != 2) ? customVal : 0x26) : 2;
     m_state.win32PriorityValue = val;
     return RegWriteDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\PriorityControl", L"Win32PrioritySeparation", val);
 }
@@ -761,141 +790,54 @@ bool TweaksEngine::SetPowerThrottling(bool disable) {
 bool TweaksEngine::SetGPUMsiMode(bool enable) {
     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
     m_state.gpuMsiMode = enable;
-    MsiManager::Get().SetCategoryMsi("GPU", enable);
-    // Iterate over PCI devices and set MSISupported for Display class
-    ScopedHKey hPciKey;
-    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Enum\\PCI", 0, KEY_READ, hPciKey.GetAddressOf()) != ERROR_SUCCESS) {
-        return false;
-    }
-
-    DWORD subKeys = 0;
-    RegQueryInfoKeyW(hPciKey.Get(), NULL, NULL, NULL, &subKeys, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
-
-    for (DWORD k = 0; k < subKeys; ++k) {
-        wchar_t devKeyName[256];
-        DWORD devKeyLen = 256;
-        if (RegEnumKeyExW(hPciKey.Get(), k, devKeyName, &devKeyLen, NULL, NULL, NULL, NULL) == ERROR_SUCCESS) {
-            ScopedHKey hSubDev;
-            if (RegOpenKeyExW(hPciKey.Get(), devKeyName, 0, KEY_READ, hSubDev.GetAddressOf()) == ERROR_SUCCESS) {
-                DWORD instCount = 0;
-                RegQueryInfoKeyW(hSubDev.Get(), NULL, NULL, NULL, &instCount, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
-                for (DWORD inst = 0; inst < instCount; ++inst) {
-                    wchar_t instName[256];
-                    DWORD instLen = 256;
-                    if (RegEnumKeyExW(hSubDev.Get(), inst, instName, &instLen, NULL, NULL, NULL, NULL) == ERROR_SUCCESS) {
-                        std::wstring instPath = std::wstring(L"SYSTEM\\CurrentControlSet\\Enum\\PCI\\") + devKeyName + L"\\" + instName;
-                        
-                        // Check ClassGUID
-                        std::wstring classGuid;
-                        if (RegReadString(HKEY_LOCAL_MACHINE, instPath, L"ClassGUID", classGuid)) {
-                            // Display adapter GUID: {4d36e968-e325-11ce-bfc1-08002be10318}
-                            if (_wcsicmp(classGuid.c_str(), L"{4d36e968-e325-11ce-bfc1-08002be10318}") == 0) {
-                                std::wstring msiKey = instPath + L"\\Device Parameters\\Interrupt Management\\MessageSignaledInterruptProperties";
-                                std::wstring affKey = instPath + L"\\Device Parameters\\Interrupt Management\\Affinity Policy";
-                                
-                                RegWriteDword(HKEY_LOCAL_MACHINE, msiKey, L"MSISupported", enable ? 1 : 0);
-                                if (enable) {
-                                    // DevicePriority: 1 = High, 2 = Normal, 3 = Low
-                                    RegWriteDword(HKEY_LOCAL_MACHINE, msiKey, L"MessageNumberLimit", 1);
-                                    RegWriteDword(HKEY_LOCAL_MACHINE, affKey, L"DevicePriority", 1);
-                                } else {
-                                    RegDeleteValue(HKEY_LOCAL_MACHINE, msiKey, L"MessageNumberLimit");
-                                    RegDeleteValue(HKEY_LOCAL_MACHINE, affKey, L"DevicePriority");
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
+    // Delegate to MsiManager: it refuses devices whose driver does not declare
+    // MSI support. The old hand-rolled PCI walk wrote MSISupported=1 to every
+    // display adapter, including ones that cannot use it.
+    bool ok = MsiManager::Get().SetCategoryMsi("GPU", enable);
     SystemInfo::Get().Refresh();
-    return true;
+    return ok;
 }
 
 bool TweaksEngine::SetAudioMsiMode(bool enable) {
     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
     m_state.audioMsiMode = enable;
-    MsiManager::Get().SetCategoryMsi("Audio", enable);
-    ScopedHKey hPciKey;
-    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Enum\\PCI", 0, KEY_READ, hPciKey.GetAddressOf()) != ERROR_SUCCESS) {
+    // Delegate to MsiManager: it only touches devices whose driver declares
+    // MSI support. The old PCI walk forced MSISupported on every audio device.
+    return MsiManager::Get().SetCategoryMsi("Audio", enable);
+}
+
+// HAGS (Hardware-Accelerated GPU Scheduling) exists on Windows 10 2004 (19041)+.
+// HwSchMode is often absent until the feature is first toggled, so absence alone
+// must not be treated as "unsupported".
+static bool IsHagsCapableOs() {
+    std::wstring build;
+    if (!RegUtil::GetString(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion", L"CurrentBuildNumber", build)) {
         return false;
     }
-
-    DWORD subKeys = 0;
-    RegQueryInfoKeyW(hPciKey.Get(), NULL, NULL, NULL, &subKeys, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
-
-    for (DWORD k = 0; k < subKeys; ++k) {
-        wchar_t devKeyName[256];
-        DWORD devKeyLen = 256;
-        if (RegEnumKeyExW(hPciKey.Get(), k, devKeyName, &devKeyLen, NULL, NULL, NULL, NULL) == ERROR_SUCCESS) {
-            ScopedHKey hSubDev;
-            if (RegOpenKeyExW(hPciKey.Get(), devKeyName, 0, KEY_READ, hSubDev.GetAddressOf()) == ERROR_SUCCESS) {
-                DWORD instCount = 0;
-                RegQueryInfoKeyW(hSubDev.Get(), NULL, NULL, NULL, &instCount, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
-                for (DWORD inst = 0; inst < instCount; ++inst) {
-                    wchar_t instName[256];
-                    DWORD instLen = 256;
-                    if (RegEnumKeyExW(hSubDev.Get(), inst, instName, &instLen, NULL, NULL, NULL, NULL) == ERROR_SUCCESS) {
-                        std::wstring instPath = std::wstring(L"SYSTEM\\CurrentControlSet\\Enum\\PCI\\") + devKeyName + L"\\" + instName;
-                        std::wstring classGuid, classVal, svcVal, descVal, hwVal;
-                        bool isAudio = false;
-                        if (RegReadString(HKEY_LOCAL_MACHINE, instPath, L"ClassGUID", classGuid)) {
-                            // Media Audio Adapter: {4d36e96c-e325-11ce-bfc1-08002be10318} or System Audio Controller: {4d36e97d-e325-11ce-bfc1-08002be10318}
-                            if (_wcsicmp(classGuid.c_str(), L"{4d36e96c-e325-11ce-bfc1-08002be10318}") == 0) {
-                                isAudio = true;
-                            }
-                        }
-                        RegReadString(HKEY_LOCAL_MACHINE, instPath, L"Service", svcVal);
-                        RegReadString(HKEY_LOCAL_MACHINE, instPath, L"DeviceDesc", descVal);
-                        if (!isAudio && RegReadString(HKEY_LOCAL_MACHINE, instPath, L"Class", classVal)) {
-                            if (_wcsicmp(classVal.c_str(), L"MEDIA") == 0) {
-                                isAudio = true;
-                            }
-                        }
-                        if (!isAudio) {
-                            if (_wcsicmp(svcVal.c_str(), L"HDAudBus") == 0 ||
-                                instPath.find(L"CC_0403") != std::wstring::npos ||
-                                instPath.find(L"CC_04") != std::wstring::npos ||
-                                descVal.find(L"Audio") != std::wstring::npos ||
-                                descVal.find(L"Sound") != std::wstring::npos) {
-                                isAudio = true;
-                            }
-                        }
-
-                        if (isAudio) {
-                            std::wstring msiKey = instPath + L"\\Device Parameters\\Interrupt Management\\MessageSignaledInterruptProperties";
-                            std::wstring affKey = instPath + L"\\Device Parameters\\Interrupt Management\\Affinity Policy";
-                            RegWriteDword(HKEY_LOCAL_MACHINE, msiKey, L"MSISupported", enable ? 1 : 0);
-                            if (enable) {
-                                RegWriteDword(HKEY_LOCAL_MACHINE, msiKey, L"MessageNumberLimit", 1);
-                                RegWriteDword(HKEY_LOCAL_MACHINE, affKey, L"DevicePriority", 2);
-                            } else {
-                                RegDeleteValue(HKEY_LOCAL_MACHINE, msiKey, L"MessageNumberLimit");
-                                RegDeleteValue(HKEY_LOCAL_MACHINE, affKey, L"DevicePriority");
-                            }
-                        }
-                    }
-                }
-            }
-        }
+    DWORD buildNum = 0;
+    for (wchar_t ch : build) {
+        if (ch < L'0' || ch > L'9') break;
+        buildNum = buildNum * 10 + static_cast<DWORD>(ch - L'0');
     }
-    return true;
+    return buildNum >= 19041;
 }
 
 bool TweaksEngine::SetHAGS(bool enable) {
     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
     m_state.hagsEnabled = enable;
 
-    // Check if GPU driver and OS support Hardware-Accelerated GPU Scheduling (WDDM 2.7+)
+    // HwSchMode: 2 = on, 1 = off (Windows default). Unsupported GPUs simply ignore
+    // the value, so writing it is harmless; only a pre-2004 OS is a hard no.
     DWORD currentMode = 0;
-    if (!RegReadDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers", L"HwSchMode", currentMode)) {
+    bool valuePresent = RegReadDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers", L"HwSchMode", currentMode);
+    if (!valuePresent && !IsHagsCapableOs()) {
         DEBUG_LOG_WARN("TweaksEngine", "HAGS (HwSchMode) не поддерживается установленным видеодрайвером/GPU (требуется WDDM 2.7+). Отклонено.");
         m_state.hagsEnabled = false;
         return false;
     }
 
     DWORD mode = enable ? 2 : 1;
+    // Reboot is required before the graphics scheduler actually switches.
     return RegWriteDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers", L"HwSchMode", mode);
 }
 
@@ -990,13 +932,11 @@ bool TweaksEngine::SetGameDVR(bool disable) {
     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
     m_state.disableGameDVR = disable;
     DWORD dvrVal = disable ? 0 : 1;
-    DWORD fseMode = disable ? 2 : 0;
 
+    // Only the capture/DVR values belong to this tweak. GameDVR_FSEBehavior* is
+    // owned by SetFullscreenOptimizations - writing it in both places made the two
+    // tweaks silently undo each other.
     RegWriteDword(HKEY_CURRENT_USER, L"System\\GameConfigStore", L"GameDVR_Enabled", dvrVal);
-    RegWriteDword(HKEY_CURRENT_USER, L"System\\GameConfigStore", L"GameDVR_FSEBehaviorMode", fseMode);
-    RegWriteDword(HKEY_CURRENT_USER, L"System\\GameConfigStore", L"GameDVR_HonorUserFSEBehaviorMode", disable ? 1 : 0);
-    RegWriteDword(HKEY_CURRENT_USER, L"System\\GameConfigStore", L"GameDVR_DXGIHonorFSEWindowsCompatible", disable ? 1 : 0);
-    RegWriteDword(HKEY_CURRENT_USER, L"System\\GameConfigStore", L"GameDVR_EFSEFeatureFlags", disable ? 0 : 1);
 
     RegWriteDword(HKEY_CURRENT_USER, L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\GameDVR", L"AppCaptureEnabled", dvrVal);
     RegWriteDword(HKEY_CURRENT_USER, L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\GameDVR", L"HistoricalCaptureEnabled", dvrVal);
@@ -1007,6 +947,7 @@ bool TweaksEngine::SetGameDVR(bool disable) {
         RegWriteDword(HKEY_CURRENT_USER, L"SOFTWARE\\Microsoft\\GameBar", L"ShowStartupPanel", 0);
         RegWriteDword(HKEY_CURRENT_USER, L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\GameDVR", L"GameDVR_AutoCaptureEnabled", 0);
     } else {
+        // Store default: GameDVR_Enabled=1, policy value absent (not 0).
         RegDeleteValue(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Policies\\Microsoft\\Windows\\GameDVR", L"AllowGameDVR");
         RegDeleteValue(HKEY_CURRENT_USER, L"SOFTWARE\\Microsoft\\GameBar", L"UseNexusForGameBarEnabled");
         RegDeleteValue(HKEY_CURRENT_USER, L"SOFTWARE\\Microsoft\\GameBar", L"ShowStartupPanel");
@@ -1018,17 +959,24 @@ bool TweaksEngine::SetGameDVR(bool disable) {
 bool TweaksEngine::SetFullscreenOptimizations(bool disable) {
     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
     m_state.disableFullscreenOptimizations = disable;
-    DWORD fseMode = disable ? 2 : 0;
-    DWORD flag = disable ? 1 : 0;
-
-    RegWriteDword(HKEY_CURRENT_USER, L"System\\GameConfigStore", L"GameDVR_FSEBehaviorMode", fseMode);
-    RegWriteDword(HKEY_CURRENT_USER, L"System\\GameConfigStore", L"GameDVR_HonorUserFSEBehaviorMode", flag);
-    RegWriteDword(HKEY_CURRENT_USER, L"System\\GameConfigStore", L"GameDVR_DXGIHonorFSEWindowsCompatible", flag);
-    RegWriteDword(HKEY_CURRENT_USER, L"System\\GameConfigStore", L"GameDVR_DSEBehavior", flag);
-    RegWriteDword(HKEY_CURRENT_USER, L"System\\GameConfigStore", L"GameDVR_EFSEFeatureFlags", disable ? 0 : 1);
+    // LIMITATION: Windows has no global "disable fullscreen optimizations for every
+    // executable" switch. The real mechanism is the per-exe AppCompat flag
+    // (HKCU\...\AppCompatFlags\Layers -> "~ DISABLEDXMAXIMIZEDWINDOWEDMODE") which
+    // has to be applied per game. The two values below are the closest global
+    // switch DWM/DXGI honours: FSE promotion behaviour (2) plus "user FSE behaviour
+    // wins" (1). Windows 11 still applies FSO to some windowed-DXGI titles, so this
+    // is best effort, not a guaranteed kill switch.
     if (disable) {
-        RegWriteDword(HKEY_CURRENT_USER, L"System\\GameConfigStore", L"GameDVR_FSEBehavior", 2);
+        RegWriteDword(HKEY_CURRENT_USER, L"System\\GameConfigStore", L"GameDVR_FSEBehaviorMode", 2);
+        RegWriteDword(HKEY_CURRENT_USER, L"System\\GameConfigStore", L"GameDVR_HonorUserFSEBehaviorMode", 1);
     } else {
+        // Windows default: values absent. Delete, never write 0.
+        RegDeleteValue(HKEY_CURRENT_USER, L"System\\GameConfigStore", L"GameDVR_FSEBehaviorMode");
+        RegDeleteValue(HKEY_CURRENT_USER, L"System\\GameConfigStore", L"GameDVR_HonorUserFSEBehaviorMode");
+        // Legacy footprint written by older builds of this app
+        RegDeleteValue(HKEY_CURRENT_USER, L"System\\GameConfigStore", L"GameDVR_DXGIHonorFSEWindowsCompatible");
+        RegDeleteValue(HKEY_CURRENT_USER, L"System\\GameConfigStore", L"GameDVR_DSEBehavior");
+        RegDeleteValue(HKEY_CURRENT_USER, L"System\\GameConfigStore", L"GameDVR_EFSEFeatureFlags");
         RegDeleteValue(HKEY_CURRENT_USER, L"System\\GameConfigStore", L"GameDVR_FSEBehavior");
     }
     return true;
@@ -1051,6 +999,11 @@ bool TweaksEngine::SetMMCSSGamesPriority(bool enable) {
         RegWriteString(HKEY_LOCAL_MACHINE, gamesTask, L"Scheduling Category", L"High");
         RegWriteString(HKEY_LOCAL_MACHINE, gamesTask, L"SFIO Priority", L"High");
     } else {
+        // Windows defaults: SystemResponsiveness=20, task values back to stock.
+        // Verified on Windows 10 19045: the "\Tasks\Games" key ships with
+        // GPU Priority=8, Priority=2, Scheduling Category=Medium, SFIO Priority=Normal,
+        // so restoring them is correct - deleting would strip stock values and only
+        // fall back to the same internal MMCSS defaults.
         RegWriteDword(HKEY_LOCAL_MACHINE, sysProfile, L"SystemResponsiveness", 20);
         RegDeleteValue(HKEY_LOCAL_MACHINE, sysProfile, L"NoLazyMode");
         RegWriteDword(HKEY_LOCAL_MACHINE, gamesTask, L"GPU Priority", 8);
@@ -1078,17 +1031,14 @@ bool TweaksEngine::SetTCPNoDelay(bool enable) {
     m_state.tcpNoDelay = enable;
     m_state.tcpAckFrequency = enable;
 
-    // Set globally on Tcpip Parameters
+    // TCPNoDelay / TcpAckFrequency are per-interface values. Writes under the
+    // ...\Tcpip\Parameters root are ignored by the stack, so clean up whatever
+    // older builds left there instead of writing it again. TcpDelAckTicks was
+    // removed after XP and is a no-op on Windows 10/11.
     std::wstring globalTcp = L"SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters";
-    if (enable) {
-        RegWriteDword(HKEY_LOCAL_MACHINE, globalTcp, L"TcpAckFrequency", 1);
-        RegWriteDword(HKEY_LOCAL_MACHINE, globalTcp, L"TCPNoDelay", 1);
-        RegWriteDword(HKEY_LOCAL_MACHINE, globalTcp, L"TcpDelAckTicks", 0);
-    } else {
-        RegDeleteValue(HKEY_LOCAL_MACHINE, globalTcp, L"TcpAckFrequency");
-        RegDeleteValue(HKEY_LOCAL_MACHINE, globalTcp, L"TCPNoDelay");
-        RegDeleteValue(HKEY_LOCAL_MACHINE, globalTcp, L"TcpDelAckTicks");
-    }
+    RegDeleteValue(HKEY_LOCAL_MACHINE, globalTcp, L"TcpAckFrequency");
+    RegDeleteValue(HKEY_LOCAL_MACHINE, globalTcp, L"TCPNoDelay");
+    RegDeleteValue(HKEY_LOCAL_MACHINE, globalTcp, L"TcpDelAckTicks");
 
     // Set on all individual network interfaces
     ScopedHKey hTcpInterfaces;
@@ -1108,12 +1058,18 @@ bool TweaksEngine::SetTCPNoDelay(bool enable) {
             if (enable) {
                 RegWriteDword(HKEY_LOCAL_MACHINE, ifPath, L"TcpAckFrequency", 1);
                 RegWriteDword(HKEY_LOCAL_MACHINE, ifPath, L"TCPNoDelay", 1);
-                RegWriteDword(HKEY_LOCAL_MACHINE, ifPath, L"TcpDelAckTicks", 0);
             } else {
-                RegDeleteValue(HKEY_LOCAL_MACHINE, ifPath, L"TcpAckFrequency");
-                RegDeleteValue(HKEY_LOCAL_MACHINE, ifPath, L"TCPNoDelay");
-                RegDeleteValue(HKEY_LOCAL_MACHINE, ifPath, L"TcpDelAckTicks");
+                // Only remove values that actually exist, so revert is a no-op on a
+                // stock system. Takes effect after the adapter is restarted.
+                DWORD existing = 0;
+                if (RegReadDword(HKEY_LOCAL_MACHINE, ifPath, L"TcpAckFrequency", existing)) {
+                    RegDeleteValue(HKEY_LOCAL_MACHINE, ifPath, L"TcpAckFrequency");
+                }
+                if (RegReadDword(HKEY_LOCAL_MACHINE, ifPath, L"TCPNoDelay", existing)) {
+                    RegDeleteValue(HKEY_LOCAL_MACHINE, ifPath, L"TCPNoDelay");
+                }
             }
+            RegDeleteValue(HKEY_LOCAL_MACHINE, ifPath, L"TcpDelAckTicks");
         }
     }
     return true;
@@ -1126,11 +1082,14 @@ bool TweaksEngine::SetTCPAckFrequency(bool enable) {
 bool TweaksEngine::SetTCPAutoTuning(bool enable) {
     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
     m_state.tcpAutoTuning = enable;
+    // Valid levels: disabled | highlyrestricted | restricted | normal (default) | experimental.
+    // "normal" is the Windows default, so it is the revert value. rss=enabled is the
+    // default state of the stack, hence it is left untouched by the revert path.
     if (enable) {
-        RunCommandHidden(L"netsh int tcp set global autotuninglevel=normal");
+        RunCommandHidden(L"netsh int tcp set global autotuninglevel=disabled");
         RunCommandHidden(L"netsh int tcp set global rss=enabled");
     } else {
-        RunCommandHidden(L"netsh int tcp set global autotuninglevel=disabled");
+        RunCommandHidden(L"netsh int tcp set global autotuninglevel=normal");
     }
     return true;
 }
@@ -1148,21 +1107,77 @@ bool TweaksEngine::SetDisablePagingExecutive(bool enable) {
 bool TweaksEngine::SetLargeSystemCache(bool gamingMode) {
     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
     m_state.largeSystemCacheDisabled = gamingMode;
-    // 0 is desktop/gaming mode (conserves RAM for games); 1 is server mode (filesystem cache expansion)
-    bool ok = RegWriteDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management", L"LargeSystemCache", gamingMode ? 0 : 1);
-    SystemTweaker::Get().GetSsdPerfSubTweaks().largeSystemCache = gamingMode;
+    // 0 is desktop/gaming mode (conserves RAM for games); 1 is server mode (filesystem
+    // cache expansion). There is no "default" DWORD: on a client the value is normally
+    // absent, so revert deletes it. Writing 1 (the old behaviour) flipped the machine
+    // into server caching.
+    bool ok = gamingMode
+        ? RegWriteDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management", L"LargeSystemCache", 0)
+        : RegDeleteValue(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management", L"LargeSystemCache");
+    // SystemTweaker mirrors the opposite polarity: its flag is "large cache enabled" (== 1).
+    SystemTweaker::Get().GetSsdPerfSubTweaks().largeSystemCache = !gamingMode;
     return ok;
 }
 
 bool TweaksEngine::SetDefaultTTL(bool enable64) {
     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
     m_state.defaultTTL64 = enable64;
+    // DefaultTTL is a global value for Tcpip. 64 is the tweak; revert deletes it so
+    // Windows goes back to its built-in 128 - writing 128 would be a different state.
     if (enable64) {
         return RegWriteDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters", L"DefaultTTL", 64);
     } else {
         return RegDeleteValue(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters", L"DefaultTTL");
     }
 }
+
+// MTU gate: only real 802.3 Ethernet / 802.11 Wi-Fi NICs. VPN (TAP/WireGuard),
+// PPPoE, WAN-Miniport and tunnel adapters legally run below 1500 (1400, 1492,
+// 1390...) and must never be rewritten. Wi-Fi is *IfType 71 (no VPN/PPPoE/tunnel
+// adapter reports 802.11); Ethernet is *IfType 6 that also reports
+// *PhysicalMediaType 14, because WAN Miniports report IfType 6 with media 0.
+// Unknown adapters are skipped on purpose.
+static bool IsPhysicalEthernetOrWiFi(const std::wstring& ifGuid) {
+    ScopedHKey hClass;
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e972-e325-11ce-bfc1-08002be10318}", 0, KEY_READ, hClass.GetAddressOf()) != ERROR_SUCCESS) {
+        return false;
+    }
+    DWORD subKeys = 0;
+    RegQueryInfoKeyW(hClass.Get(), NULL, NULL, NULL, &subKeys, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+    for (DWORD i = 0; i < subKeys; ++i) {
+        wchar_t subName[64] = { 0 };
+        DWORD subLen = 63;
+        if (RegEnumKeyExW(hClass.Get(), i, subName, &subLen, NULL, NULL, NULL, NULL) != ERROR_SUCCESS) continue;
+        if (subName[0] < L'0' || subName[0] > L'9') continue; // skip keys like "Properties"
+        std::wstring subPath = std::wstring(L"SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e972-e325-11ce-bfc1-08002be10318}\\") + subName;
+        std::wstring instanceId;
+        if (!RegUtil::GetString(HKEY_LOCAL_MACHINE, subPath, L"NetCfgInstanceId", instanceId)) continue;
+        if (_wcsicmp(instanceId.c_str(), ifGuid.c_str()) != 0) continue;
+        std::wstring desc;
+        if (RegUtil::GetString(HKEY_LOCAL_MACHINE, subPath, L"DriverDesc", desc) && desc.find(L"Kernel Debug") != std::wstring::npos) {
+            return false; // debug transport, not a real NIC
+        }
+        DWORD ifType = 0;
+        DWORD physMedia = 0;
+        bool hasType = RegUtil::GetDword(HKEY_LOCAL_MACHINE, subPath, L"*IfType", ifType);
+        bool hasMedia = RegUtil::GetDword(HKEY_LOCAL_MACHINE, subPath, L"*PhysicalMediaType", physMedia);
+        if (hasType && ifType == 71) {
+            return true; // Wi-Fi: no VPN/PPPoE/tunnel adapter reports 802.11
+        }
+        if (hasType && ifType == 6) {
+            // Ethernet is ambiguous (WAN Miniports report 6 with media 0), so the
+            // 802.3 media type is required to prove it is a real NIC.
+            return hasMedia && physMedia == 14;
+        }
+        return false;
+    }
+    return false;
+}
+
+// Previous MTU per interface GUID, captured when the tweak is applied so revert
+// restores the real value instead of blindly deleting. Process-lifetime only: after
+// a restart the fallback lower down removes MTU only while it is still our 1500.
+static std::map<std::wstring, DWORD> g_mtuBackup;
 
 bool TweaksEngine::SetNetworkMTU(bool enable1500) {
     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
@@ -1176,12 +1191,33 @@ bool TweaksEngine::SetNetworkMTU(bool enable1500) {
     for (DWORD k = 0; k < subKeys; ++k) {
         wchar_t ifName[256] = { 0 };
         DWORD ifLen = 255;
-        if (RegEnumKeyExW(hTcpInterfaces.Get(), k, ifName, &ifLen, NULL, NULL, NULL, NULL) == ERROR_SUCCESS) {
-            ifName[255] = L'\0';
-            std::wstring ifPath = std::wstring(L"SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters\\Interfaces\\") + ifName;
-            if (enable1500) {
-                RegWriteDword(HKEY_LOCAL_MACHINE, ifPath, L"MTU", 1500);
-            } else {
+        if (RegEnumKeyExW(hTcpInterfaces.Get(), k, ifName, &ifLen, NULL, NULL, NULL, NULL) != ERROR_SUCCESS) continue;
+        ifName[255] = L'\0';
+        std::wstring guid = ifName;
+        if (!IsPhysicalEthernetOrWiFi(guid)) continue; // leave VPN/PPPoE/tunnel MTU untouched
+        std::wstring ifPath = std::wstring(L"SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters\\Interfaces\\") + guid;
+
+        DWORD currentMtu = 0;
+        bool hasMtu = RegReadDword(HKEY_LOCAL_MACHINE, ifPath, L"MTU", currentMtu);
+
+        if (enable1500) {
+            // 1500 is already the Ethernet default; do not create a value for it.
+            if (hasMtu && currentMtu == 1500) continue;
+            if (g_mtuBackup.find(guid) == g_mtuBackup.end()) {
+                g_mtuBackup[guid] = hasMtu ? currentMtu : 1500;
+            }
+            RegWriteDword(HKEY_LOCAL_MACHINE, ifPath, L"MTU", 1500);
+        } else {
+            auto it = g_mtuBackup.find(guid);
+            if (it != g_mtuBackup.end()) {
+                if (it->second == 1500) {
+                    RegDeleteValue(HKEY_LOCAL_MACHINE, ifPath, L"MTU");
+                } else {
+                    RegWriteDword(HKEY_LOCAL_MACHINE, ifPath, L"MTU", it->second);
+                }
+                g_mtuBackup.erase(it);
+            } else if (hasMtu && currentMtu == 1500) {
+                // No backup (app restarted): only drop a value we could have written.
                 RegDeleteValue(HKEY_LOCAL_MACHINE, ifPath, L"MTU");
             }
         }
@@ -1192,6 +1228,10 @@ bool TweaksEngine::SetNetworkMTU(bool enable1500) {
 bool TweaksEngine::SetIoPageLockLimit(bool enable) {
     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
     m_state.ioPageLockLimit = enable;
+    // LEGACY NO-OP: IoPageLockLimit has been ignored by the memory manager since
+    // Vista SP1 (the value is read but never applied). Kept only so the owner can
+    // decide whether to drop it from the UI. Revert deletes it, which is the only
+    // correct "default" (the value does not exist on a stock Windows 10/11).
     std::wstring memPath = L"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management";
     if (enable) {
         return RegWriteDword(HKEY_LOCAL_MACHINE, memPath, L"IoPageLockLimit", 0x08000000); // 128 MB
@@ -1230,22 +1270,24 @@ bool TweaksEngine::SetFlatMouseCurve(bool enable) {
         RegWriteBinary(HKEY_CURRENT_USER, L"Control Panel\\Mouse", L"SmoothMouseYCurve", flatYCurve, sizeof(flatYCurve));
 
         // Immediately update Win32 user subsystem mouse parameters in memory
+        // SPI_SETMOUSE expects { threshold1, threshold2, acceleration }
         int mouseParams[3] = { 0, 0, 0 };
         SystemParametersInfoW(SPI_SETMOUSE, 0, mouseParams, SPIF_SENDCHANGE | SPIF_UPDATEINIFILE);
         SystemParametersInfoW(SPI_SETMOUSESPEED, 0, (PVOID)(UINT_PTR)10, SPIF_SENDCHANGE | SPIF_UPDATEINIFILE);
     } else {
-        // Windows Default: Zero Acceleration, Linear 6/11 Pointer Speed, Clean Microsoft Defaults
-        // CRITICAL BUGFIX: Never enable MouseSpeed=1 or write distorted curves with 11x multiplier!
-        RegWriteString(HKEY_CURRENT_USER, L"Control Panel\\Mouse", L"MouseSpeed", L"0");
-        RegWriteString(HKEY_CURRENT_USER, L"Control Panel\\Mouse", L"MouseThreshold1", L"0");
-        RegWriteString(HKEY_CURRENT_USER, L"Control Panel\\Mouse", L"MouseThreshold2", L"0");
+        // Windows defaults (Control Panel -> Mouse): acceleration on, thresholds 1/6/10.
+        // Note: with acceleration off (MouseSpeed=0) Windows maps 1:1 and the curves
+        // are not consulted, but they stay written so the state is detectable.
+        RegWriteString(HKEY_CURRENT_USER, L"Control Panel\\Mouse", L"MouseSpeed", L"1");
+        RegWriteString(HKEY_CURRENT_USER, L"Control Panel\\Mouse", L"MouseThreshold1", L"6");
+        RegWriteString(HKEY_CURRENT_USER, L"Control Panel\\Mouse", L"MouseThreshold2", L"10");
         RegWriteString(HKEY_CURRENT_USER, L"Control Panel\\Mouse", L"MouseSensitivity", L"10");
 
         // Delete custom curves so Windows defaults take over cleanly, preventing any curve corruption
         RegDeleteValue(HKEY_CURRENT_USER, L"Control Panel\\Mouse", L"SmoothMouseXCurve");
         RegDeleteValue(HKEY_CURRENT_USER, L"Control Panel\\Mouse", L"SmoothMouseYCurve");
 
-        int mouseParams[3] = { 0, 0, 0 };
+        int mouseParams[3] = { 6, 10, 1 }; // threshold1, threshold2, acceleration
         SystemParametersInfoW(SPI_SETMOUSE, 0, mouseParams, SPIF_SENDCHANGE | SPIF_UPDATEINIFILE);
         SystemParametersInfoW(SPI_SETMOUSESPEED, 0, (PVOID)(UINT_PTR)10, SPIF_SENDCHANGE | SPIF_UPDATEINIFILE);
     }
@@ -1263,8 +1305,11 @@ bool TweaksEngine::SetKeyboardSpeed(bool enable) {
         SystemParametersInfoW(SPI_SETKEYBOARDDELAY, 0, 0, SPIF_SENDCHANGE | SPIF_UPDATEINIFILE);
         SystemParametersInfoW(SPI_SETKEYBOARDSPEED, 31, 0, SPIF_SENDCHANGE | SPIF_UPDATEINIFILE);
     } else {
+        // Windows defaults: KeyboardDelay=1, KeyboardSpeed=31 (SPI takes 0..3 / 0..31).
         RegWriteString(HKEY_CURRENT_USER, L"Control Panel\\Keyboard", L"KeyboardDelay", L"1");
         RegWriteString(HKEY_CURRENT_USER, L"Control Panel\\Keyboard", L"KeyboardSpeed", L"31");
+        // Undo the PrintScreen side effect - the value is not present on a stock system.
+        RegDeleteValue(HKEY_CURRENT_USER, L"Control Panel\\Keyboard", L"PrintScreenKeyForSnippingEnabled");
         SystemParametersInfoW(SPI_SETKEYBOARDDELAY, 1, 0, SPIF_SENDCHANGE | SPIF_UPDATEINIFILE);
         SystemParametersInfoW(SPI_SETKEYBOARDSPEED, 31, 0, SPIF_SENDCHANGE | SPIF_UPDATEINIFILE);
     }
@@ -1274,9 +1319,14 @@ bool TweaksEngine::SetKeyboardSpeed(bool enable) {
 bool TweaksEngine::SetTelemetry(bool disable) {
     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
     m_state.disableTelemetry = disable;
-    DWORD telemVal = disable ? 0 : 3;
-    RegWriteDword(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Policies\\Microsoft\\Windows\\DataCollection", L"AllowTelemetry", telemVal);
-    RegWriteDword(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\DataCollection", L"AllowTelemetry", telemVal);
+    std::wstring dataCollection = L"SOFTWARE\\Policies\\Microsoft\\Windows\\DataCollection";
+    if (disable) {
+        // 1 is the effective floor for Home/Pro
+        RegWriteDword(HKEY_LOCAL_MACHINE, dataCollection, L"AllowTelemetry", 1);
+    } else {
+        // Stock behaviour: policy value absent
+        RegDeleteValue(HKEY_LOCAL_MACHINE, dataCollection, L"AllowTelemetry");
+    }
 
     // DiagTrack and dmwappushservice service start types in registry
     RegWriteDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Services\\DiagTrack", L"Start", disable ? 4 : 2);
@@ -1367,6 +1417,10 @@ bool TweaksEngine::ApplyPreset(PresetType preset, std::string& outStatus) {
     std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
     m_activePreset = preset;
 
+    // Start from a clean baseline: without this, switching between presets kept
+    // whatever the previous preset had switched on and ApplyAll re-wrote it.
+    m_state = TweakState{};
+
     if (preset == PresetType::EsportsUltra) {
         // -------------------------------------------------------------
         // PRESET 1: «Esports Ultra (Максимальный соревновательный)»
@@ -1389,7 +1443,7 @@ bool TweaksEngine::ApplyPreset(PresetType preset, std::string& outStatus) {
         m_state.audioMsiMode = true;
         m_state.hagsEnabled = true;
         m_state.forceP0 = false; // Disabled: vendor-specific, unstable on AMD/Intel and modern RTX architectures
-        m_state.csrssDwmPriority = false; // 100% Anti-Cheat Safe (Vanguard, EAC, BattlEye, VAC, FACEIT)
+        m_state.csrssDwmPriority = false; // Not applied: process priority hacks on csrss/dwm are unstable
         m_state.disableGameDVR = true;     // GameDVR & Game Bar disabled
         m_state.disableFullscreenOptimizations = true; // FSO bypass
         m_state.mmcssGamesPriority = true; // SystemResponsiveness = 0
@@ -1401,7 +1455,7 @@ bool TweaksEngine::ApplyPreset(PresetType preset, std::string& outStatus) {
         m_state.optimalMTU = true;
         m_state.disablePagingExecutive = true;   // DisablePagingExecutive = 1
         m_state.largeSystemCacheDisabled = true; // LargeSystemCache = 0 (desktop/gaming mode)
-        m_state.ioPageLockLimit = true;
+        m_state.ioPageLockLimit = false;         // legacy no-op since Vista SP1, not part of a preset
         m_state.flatMouseCurve = true;     // 1:1 MarkC Linear Mouse Curve (Zero acceleration)
         m_state.keyboardMaxSpeed = true;
         m_state.disableTelemetry = true;
@@ -1422,8 +1476,6 @@ bool TweaksEngine::ApplyPreset(PresetType preset, std::string& outStatus) {
         sysTweaker.ApplyOsPerfSubTweak("ultimatePowerPlan", true, dummy);
         sysTweaker.ApplyOsPerfSubTweak("disablePowerThrottling", true, dummy);
         sysTweaker.ApplySingleSystemTweak("disablePowerThrottling", true, dummy);
-        sysTweaker.ApplyOsPerfSubTweak("alwaysUnloadDll", true, dummy);
-        sysTweaker.ApplyOsPerfSubTweak("nonPagedPoolFix", true, dummy);
         sysTweaker.ApplyOsPerfSubTweak("disableBackgroundApps", false, dummy);
         sysTweaker.ApplyOsPerfSubTweak("disableAutoWindowsUpdate", true, dummy);
         sysTweaker.ApplyOsPerfSubTweak("disableDriverUpdates", true, dummy);
@@ -1465,7 +1517,7 @@ bool TweaksEngine::ApplyPreset(PresetType preset, std::string& outStatus) {
         sysTweaker.DetectTelemetrySubState();
         sysTweaker.RefreshServiceStates();
 
-        outStatus = "Пресет «Esports Ultra (Максимальный соревновательный)» активирован: 0.500ms таймер locked, Win32 0x26, MMCSS 100%, TCPNoDelay, Unpark 100%, 100% Anti-Cheat Safe!";
+        outStatus = "Пресет «Competitive Games» применён: таймер 0.5 мс, кванты 0x26, MMCSS, TCPNoDelay, ядра разпаркованы. Перезагрузка нужна для BCD-параметров.";
         DEBUG_LOG_SUCCESS("TweaksEngine", outStatus);
         return true;
     } else if (preset == PresetType::CompetitiveGaming) {
@@ -1522,8 +1574,6 @@ bool TweaksEngine::ApplyPreset(PresetType preset, std::string& outStatus) {
         std::string dummy;
 
         // Safe OS performance tweaks keeping everyday comfort
-        sysTweaker.ApplyOsPerfSubTweak("alwaysUnloadDll", true, dummy);
-        sysTweaker.ApplyOsPerfSubTweak("nonPagedPoolFix", true, dummy);
         sysTweaker.ApplyOsPerfSubTweak("disableReservedStorage", true, dummy);
         sysTweaker.ApplyOsPerfSubTweak("disablePowerThrottling", true, dummy);
         sysTweaker.ApplySingleSystemTweak("disablePowerThrottling", true, dummy);
@@ -1572,7 +1622,7 @@ bool TweaksEngine::ApplyPreset(PresetType preset, std::string& outStatus) {
         sysTweaker.DetectTelemetrySubState();
         sysTweaker.RefreshServiceStates();
 
-        outStatus = "Пресет «Competitive Gaming (Сбалансированный игровой)» активирован: 0.500ms таймер, TCPNoDelay, Unpark ядер, сохранены Bluetooth, печать и оверлеи!";
+        outStatus = "Пресет «Balance» применён: таймер 0.5 мс, TCPNoDelay, ядра разпаркованы, Bluetooth/печать/оверлеи сохранены.";
         DEBUG_LOG_SUCCESS("TweaksEngine", outStatus);
         return true;
     } else if (preset == PresetType::WindowsDefault) {
@@ -1643,7 +1693,7 @@ bool TweaksEngine::RevertToDefaults(std::string& outStatus) {
     SystemTweaker::Get().DetectTelemetrySubState();
     SystemTweaker::Get().RefreshServiceStates();
 
-    outStatus = "Пресет «Windows Default (Заводской Microsoft)» активирован: заводские таймеры, BCD, сеть (10/20), Win32 0x2 и все службы восстановлены!";
+    outStatus = "Пресет «Windows Default» применён: заводские таймеры, BCD, сеть (10/20), кванты 0x2, службы восстановлены.";
     DEBUG_LOG_SUCCESS("TweaksEngine", outStatus);
     return true;
 }

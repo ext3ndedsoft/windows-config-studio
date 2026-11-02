@@ -5,6 +5,10 @@
 #include <functional>
 #include <mutex>
 #include <vector>
+#include <deque>
+#include <thread>
+#include <condition_variable>
+#include <atomic>
 #include "third_party/webview2/build/native/include/WebView2.h"
 #include "third_party/json.hpp"
 
@@ -51,6 +55,19 @@ private:
     DWORD m_mainThreadId = 0;
     std::mutex m_uiTaskMutex;
     std::vector<std::function<void()>> m_uiTasks;
+
+    // Serialized background job queue. All heavy actions run here one at a
+    // time, so registry/BCD state is never mutated concurrently by two
+    // requests, and a spammy frontend cannot spawn unbounded threads.
+    static constexpr size_t kMaxQueuedJobs = 12;
+    void StartWorker();
+    bool EnqueueJob(std::function<void()> job);
+
+    std::mutex m_jobMutex;
+    std::condition_variable m_jobCv;
+    std::deque<std::function<void()>> m_jobs;
+    std::thread m_worker;
+    std::atomic<bool> m_workerStop{ false };
 
     // Dispatcher
     nlohmann::json ProcessAction(const std::string& action, const nlohmann::json& params);

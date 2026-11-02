@@ -4,6 +4,8 @@
 #include <wrl.h>
 #include <string>
 #include <functional>
+#include <thread>
+#include <atomic>
 #include "third_party/webview2/build/native/include/WebView2.h"
 
 class WebViewWindow {
@@ -35,6 +37,23 @@ private:
 
     Microsoft::WRL::ComPtr<ICoreWebView2Controller> m_controller;
     Microsoft::WRL::ComPtr<ICoreWebView2> m_webView;
+
+    // Registration tokens are kept so handlers can be detached before the
+    // controller is closed; handlers capture raw `this`.
+    EventRegistrationToken m_navStartingToken{};
+    EventRegistrationToken m_navCompletedToken{};
+    EventRegistrationToken m_webMessageToken{};
+    EventRegistrationToken m_accelToken{};
+    bool m_hasNavStartingToken = false;
+    bool m_hasNavCompletedToken = false;
+    bool m_hasWebMessageToken = false;
+    bool m_hasAccelToken = false;
+
+    // Deferred post-navigation memory trim; joined in the destructor.
+    std::thread m_trimThread;
+    std::atomic<bool> m_stopTrim{ false };
+
+    void StartDeferredTrim();
 
     std::wstring GetWebRootPath() const;
     std::wstring GetUserDataDir() const;

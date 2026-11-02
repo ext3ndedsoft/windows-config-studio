@@ -180,6 +180,13 @@ static std::string SanitizeDeviceId(const std::string& id) {
     return cleanId;
 }
 
+// Storage and USB host controllers are on the boot path. Flipping MSI on them can
+// leave Windows unable to reach its own disk or keyboard, so they are never touched
+// by bulk operations and require an explicit per-device confirmation.
+static bool IsCriticalInterruptCategory(const std::string& category) {
+    return (category == "Storage" || category == "USB");
+}
+
 MsiManager::MsiManager() = default;
 
 MsiManager& MsiManager::Get() {
@@ -282,9 +289,12 @@ void MsiManager::ScanDevicesLocked() {
         std::wstring msiKeyPath = devSubKey + L"\\Device Parameters\\Interrupt Management\\MessageSignaledInterruptProperties";
         ScopedHKey hMsi;
         if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, msiKeyPath.c_str(), 0, KEY_READ, hMsi.put()) == ERROR_SUCCESS) {
-            dev.msiSupported = true;
+            // Only a device that already carries MSISupported may be offered for MSI.
+            // A missing value means the driver never opted in; enabling it blindly is
+            // exactly what turns a storage/USB controller into an unbootable machine.
             DWORD msiVal = 0;
             if (ReadRegDword(hMsi, L"MSISupported", msiVal)) {
+                dev.msiSupported = true;
                 dev.msiEnabled = (msiVal == 1);
             }
             DWORD limitVal = 0;
@@ -292,8 +302,7 @@ void MsiManager::ScanDevicesLocked() {
                 dev.messageLimit = (int)limitVal;
             }
         } else {
-            // For modifiable PCIe devices, MSI can be enabled via registry key creation
-            dev.msiSupported = dev.canModify;
+            dev.msiSupported = false;
             dev.msiEnabled = false;
             dev.messageLimit = 1;
         }
@@ -366,23 +375,41 @@ nlohmann::json MsiManager::GetDevicesJson() {
     return root;
 }
 
-bool MsiManager::SetMsiEnabled(const std::string& id, bool enabled, std::string& outMsg) {
+bool MsiManager::SetMsiEnabled(const std::string& id, bool enabled, std::string& outMsg, bool confirmUnsupported) {
     std::lock_guard<std::mutex> lock(m_mutex);
-    std::string cleanId = SanitizeDeviceId(id);
 
-    // Validate that device is safe to modify
+    // Resolve the device from the scanned list first. Building a registry path from an
+    // arbitrary caller string would allow writing under any Enum\PCI key.
     PciMsiDevice* targetDev = nullptr;
     for (auto& d : m_devices) {
-        if (d.id == id || d.id == cleanId || SanitizeDeviceId(d.id) == cleanId) {
+        if (d.id == id || SanitizeDeviceId(d.id) == SanitizeDeviceId(id)) {
             targetDev = &d;
             break;
         }
     }
-    if (targetDev && !targetDev->canModify) {
+    if (!targetDev) {
+        outMsg = "Устройство не найдено. Обновите список PCI-устройств и повторите попытку.";
+        return false;
+    }
+    if (!targetDev->canModify) {
         outMsg = "Устройство является критическим системным контроллером и защищено от изменений.";
         return false;
     }
+    if (enabled) {
+        if (!targetDev->msiSupported && !confirmUnsupported) {
+            outMsg = "Драйвер устройства не заявляет поддержку MSI (значение MSISupported отсутствует). Включение может привести к незагрузке Windows — действие заблокировано.";
+            return false;
+        }
+        if (IsCriticalInterruptCategory(targetDev->category) && !confirmUnsupported) {
+            outMsg = "Контроллеры хранения и USB участвуют в загрузке системы: включение MSI требует явного подтверждения для этого устройства.";
+            return false;
+        }
+    } else if (!targetDev->msiSupported) {
+        outMsg = "MSI для этого устройства не был настроен — откатывать нечего.";
+        return false;
+    }
 
+    std::string cleanId = SanitizeDeviceId(targetDev->id);
     std::wstring devSubKey = L"SYSTEM\\CurrentControlSet\\Enum\\PCI\\" + Utf8ToWide(cleanId);
     std::wstring msiKeyPath = devSubKey + L"\\Device Parameters\\Interrupt Management\\MessageSignaledInterruptProperties";
 
@@ -402,47 +429,52 @@ bool MsiManager::SetMsiEnabled(const std::string& id, bool enabled, std::string&
         return false;
     }
 
+    DWORD readBack = 0xFFFFFFFF;
+    if (!ReadRegDword(hKey, L"MSISupported", readBack) || readBack != val) {
+        outMsg = "Значение MSISupported не подтвердилось после записи";
+        return false;
+    }
+
     if (enabled) {
         DWORD msgLimit = 0;
-        DWORD cbData = sizeof(msgLimit);
-        DWORD type = 0;
-        if (RegQueryValueExW(hKey, L"MessageNumberLimit", NULL, &type, (LPBYTE)&msgLimit, &cbData) != ERROR_SUCCESS || msgLimit == 0) {
+        if (!ReadRegDword(hKey, L"MessageNumberLimit", msgLimit) || msgLimit == 0) {
             msgLimit = 1;
             RegSetValueExW(hKey, L"MessageNumberLimit", 0, REG_DWORD, (const BYTE*)&msgLimit, sizeof(msgLimit));
         }
     }
 
-    // Update in-memory device list
-    for (auto& d : m_devices) {
-        if (d.id == id || d.id == cleanId || SanitizeDeviceId(d.id) == cleanId) {
-            d.msiEnabled = enabled;
-            d.msiSupported = true;
-            if (enabled && d.messageLimit <= 0) d.messageLimit = 1;
-            break;
-        }
-    }
+    targetDev->msiEnabled = enabled;
+    targetDev->msiSupported = true;
+    if (enabled && targetDev->messageLimit <= 0) targetDev->messageLimit = 1;
 
-    outMsg = "Режим MSI успешно " + std::string(enabled ? "включен" : "отключен") + ". Требуется перезагрузка для применения драйвером.";
+    outMsg = "Режим MSI успешно " + std::string(enabled ? "включен" : "отключен") + " для «" + targetDev->name + "». Требуется перезагрузка для применения драйвером.";
     return true;
 }
 
 bool MsiManager::SetDevicePriority(const std::string& id, int priority, std::string& outMsg) {
     std::lock_guard<std::mutex> lock(m_mutex);
-    std::string cleanId = SanitizeDeviceId(id);
+    if (priority < 0 || priority > 3) {
+        outMsg = "Недопустимое значение приоритета IRQ (0–3).";
+        return false;
+    }
 
-    // Validate that device is safe to modify
     PciMsiDevice* targetDev = nullptr;
     for (auto& d : m_devices) {
-        if (d.id == id || d.id == cleanId || SanitizeDeviceId(d.id) == cleanId) {
+        if (d.id == id || SanitizeDeviceId(d.id) == SanitizeDeviceId(id)) {
             targetDev = &d;
             break;
         }
     }
-    if (targetDev && !targetDev->canModify) {
+    if (!targetDev) {
+        outMsg = "Устройство не найдено. Обновите список PCI-устройств и повторите попытку.";
+        return false;
+    }
+    if (!targetDev->canModify) {
         outMsg = "Устройство является критическим системным контроллером и защищено от изменений.";
         return false;
     }
 
+    std::string cleanId = SanitizeDeviceId(targetDev->id);
     std::wstring devSubKey = L"SYSTEM\\CurrentControlSet\\Enum\\PCI\\" + Utf8ToWide(cleanId);
     std::wstring affKeyPath = devSubKey + L"\\Device Parameters\\Interrupt Management\\Affinity Policy";
 
@@ -456,22 +488,25 @@ bool MsiManager::SetDevicePriority(const std::string& id, int priority, std::str
     }
 
     if (priority == 0) {
-        RegDeleteValueW(hKey, L"DevicePriority");
+        status = RegDeleteValueW(hKey, L"DevicePriority");
+        if (status != ERROR_SUCCESS && status != ERROR_FILE_NOT_FOUND) {
+            outMsg = "Не удалось вернуть приоритет IRQ по умолчанию (код " + std::to_string(status) + ")";
+            return false;
+        }
     } else {
         DWORD val = (DWORD)priority;
-        RegSetValueExW(hKey, L"DevicePriority", 0, REG_DWORD, (const BYTE*)&val, sizeof(val));
-    }
-
-    for (auto& d : m_devices) {
-        if (d.id == id || d.id == cleanId || SanitizeDeviceId(d.id) == cleanId) {
-            d.priority = priority;
-            break;
+        status = RegSetValueExW(hKey, L"DevicePriority", 0, REG_DWORD, (const BYTE*)&val, sizeof(val));
+        if (status != ERROR_SUCCESS) {
+            outMsg = "Не удалось записать приоритет IRQ (код " + std::to_string(status) + ")";
+            return false;
         }
     }
 
+    targetDev->priority = priority;
+
     const char* prioNames[] = { "По умолчанию", "Низкий", "Обычный", "Высокий" };
-    const char* pName = (priority >= 0 && priority <= 3) ? prioNames[priority] : "По умолчанию";
-    outMsg = "Приоритет IRQ установлен: " + std::string(pName) + ".";
+    const char* pName = prioNames[priority];
+    outMsg = "Приоритет IRQ установлен: " + std::string(pName) + ". Требуется перезагрузка для применения драйвером.";
     return true;
 }
 
@@ -482,23 +517,27 @@ bool MsiManager::ApplyRecommendedEsportsProfile(std::string& outMsg) {
     }
 
     int gpuCount = 0;
-    int netCount = 0;
-    int usbCount = 0;
     int audioCount = 0;
+    int skipped = 0;
+    std::string skippedList;
 
-    auto setMsi = [](const std::string& devId, bool enabled) {
+    auto setMsi = [](const std::string& devId) -> bool {
         std::string cleanId = SanitizeDeviceId(devId);
         std::wstring path = L"SYSTEM\\CurrentControlSet\\Enum\\PCI\\" + Utf8ToWide(cleanId) + L"\\Device Parameters\\Interrupt Management\\MessageSignaledInterruptProperties";
         ScopedHKey hKey;
-        if (RegCreateKeyExW(HKEY_LOCAL_MACHINE, path.c_str(), 0, NULL, REG_OPTION_NON_VOLATILE, KEY_SET_VALUE | KEY_QUERY_VALUE, NULL, hKey.put(), NULL) == ERROR_SUCCESS) {
-            DWORD val = enabled ? 1 : 0;
-            RegSetValueExW(hKey, L"MSISupported", 0, REG_DWORD, (const BYTE*)&val, sizeof(val));
-            DWORD msgLimit = 0, cbData = sizeof(msgLimit), type = 0;
-            if (RegQueryValueExW(hKey, L"MessageNumberLimit", NULL, &type, (LPBYTE)&msgLimit, &cbData) != ERROR_SUCCESS || msgLimit == 0) {
-                msgLimit = 1;
-                RegSetValueExW(hKey, L"MessageNumberLimit", 0, REG_DWORD, (const BYTE*)&msgLimit, sizeof(msgLimit));
-            }
+        if (RegCreateKeyExW(HKEY_LOCAL_MACHINE, path.c_str(), 0, NULL, REG_OPTION_NON_VOLATILE, KEY_SET_VALUE | KEY_QUERY_VALUE, NULL, hKey.put(), NULL) != ERROR_SUCCESS) {
+            return false;
         }
+        DWORD val = 1;
+        if (RegSetValueExW(hKey, L"MSISupported", 0, REG_DWORD, (const BYTE*)&val, sizeof(val)) != ERROR_SUCCESS) {
+            return false;
+        }
+        DWORD msgLimit = 0;
+        if (!ReadRegDword(hKey, L"MessageNumberLimit", msgLimit) || msgLimit == 0) {
+            msgLimit = 1;
+            RegSetValueExW(hKey, L"MessageNumberLimit", 0, REG_DWORD, (const BYTE*)&msgLimit, sizeof(msgLimit));
+        }
+        return true;
     };
 
     auto setPrio = [](const std::string& devId, int priority) {
@@ -517,41 +556,38 @@ bool MsiManager::ApplyRecommendedEsportsProfile(std::string& outMsg) {
 
     for (auto& d : m_devices) {
         if (!d.canModify) continue;
-
-        if (d.category == "GPU") {
-            setMsi(d.id, true);
-            setPrio(d.id, 3); // High
-            d.msiEnabled = true;
-            d.msiSupported = true;
-            d.priority = 3;
-            gpuCount++;
-        } else if (d.category == "Network") {
-            setMsi(d.id, true);
-            setPrio(d.id, 3); // High
-            d.msiEnabled = true;
-            d.msiSupported = true;
-            d.priority = 3;
-            netCount++;
-        } else if (d.category == "USB") {
-            setMsi(d.id, true);
-            setPrio(d.id, 3); // High
-            d.msiEnabled = true;
-            d.msiSupported = true;
-            d.priority = 3;
-            usbCount++;
-        } else if (d.category == "Audio") {
-            setMsi(d.id, true);
-            setPrio(d.id, 2); // Normal
-            d.msiEnabled = true;
-            d.msiSupported = true;
-            d.priority = 2;
-            audioCount++;
+        // Curated safe list: only GPU and audio. Network/USB/Storage are never touched
+        // by the one-click profile.
+        if (d.category != "GPU" && d.category != "Audio") continue;
+        if (!d.msiSupported) {
+            skipped++;
+            if (!skippedList.empty()) skippedList += ", ";
+            skippedList += d.name;
+            continue;
         }
+        if (!setMsi(d.id)) {
+            skipped++;
+            if (!skippedList.empty()) skippedList += ", ";
+            skippedList += d.name;
+            continue;
+        }
+        int prio = (d.category == "GPU") ? 3 : 2;
+        setPrio(d.id, prio);
+        d.msiEnabled = true;
+        d.priority = prio;
+        if (d.category == "GPU") gpuCount++; else audioCount++;
     }
 
-    outMsg = "Киберспортивный профиль MSI успешно применен! GPU (" + std::to_string(gpuCount) +
-             ", High), Сеть (" + std::to_string(netCount) + ", High), USB (" + std::to_string(usbCount) +
-             ", High), Звук (" + std::to_string(audioCount) + ", Normal). Требуется перезагрузка ПК.";
+    if (gpuCount + audioCount == 0) {
+        outMsg = "Безопасных устройств для профиля MSI не найдено: ни один GPU или аудио-контроллер не заявляет поддержку MSI. Пропущено устройств: " + std::to_string(skipped) + ".";
+        return false;
+    }
+
+    outMsg = "Профиль MSI применен: GPU (" + std::to_string(gpuCount) + ", Высокий приоритет), Звук (" +
+             std::to_string(audioCount) + ", Обычный приоритет). Сетевые, USB и дисковые контроллеры не изменялись. Требуется перезагрузка ПК.";
+    if (skipped > 0) {
+        outMsg += " Пропущено без поддержки MSI: " + std::to_string(skipped) + " (" + skippedList + ").";
+    }
     return true;
 }
 
@@ -573,23 +609,32 @@ bool MsiManager::SetCategoryMsi(const std::string& category, bool enabled) {
     if (!m_scanned) {
         ScanDevicesLocked();
     }
+    // Bulk operations are limited to devices that cannot sit on the boot path.
+    if (category != "GPU" && category != "Audio" && category != "Network") {
+        return false;
+    }
     bool anyChanged = false;
     for (auto& d : m_devices) {
-        if (d.category == category && d.canModify) {
-            std::string cleanId = SanitizeDeviceId(d.id);
-            std::wstring msiPath = L"SYSTEM\\CurrentControlSet\\Enum\\PCI\\" + Utf8ToWide(cleanId) + L"\\Device Parameters\\Interrupt Management\\MessageSignaledInterruptProperties";
-            ScopedHKey hKey;
-            if (RegCreateKeyExW(HKEY_LOCAL_MACHINE, msiPath.c_str(), 0, NULL, REG_OPTION_NON_VOLATILE, KEY_SET_VALUE | KEY_QUERY_VALUE, NULL, hKey.put(), NULL) == ERROR_SUCCESS) {
-                DWORD val = enabled ? 1 : 0;
-                RegSetValueExW(hKey, L"MSISupported", 0, REG_DWORD, (const BYTE*)&val, sizeof(val));
-                if (enabled) {
-                    DWORD limit = 1;
+        if (d.category != category || !d.canModify) continue;
+        if (!d.msiSupported) continue;      // never gamble on a driver that never declared MSI
+        if (enabled && IsCriticalInterruptCategory(d.category)) continue;
+        std::string cleanId = SanitizeDeviceId(d.id);
+        std::wstring msiPath = L"SYSTEM\\CurrentControlSet\\Enum\\PCI\\" + Utf8ToWide(cleanId) + L"\\Device Parameters\\Interrupt Management\\MessageSignaledInterruptProperties";
+        ScopedHKey hKey;
+        if (RegCreateKeyExW(HKEY_LOCAL_MACHINE, msiPath.c_str(), 0, NULL, REG_OPTION_NON_VOLATILE, KEY_SET_VALUE | KEY_QUERY_VALUE, NULL, hKey.put(), NULL) == ERROR_SUCCESS) {
+            DWORD val = enabled ? 1 : 0;
+            if (RegSetValueExW(hKey, L"MSISupported", 0, REG_DWORD, (const BYTE*)&val, sizeof(val)) != ERROR_SUCCESS) {
+                continue;
+            }
+            if (enabled) {
+                DWORD limit = 0;
+                if (!ReadRegDword(hKey, L"MessageNumberLimit", limit) || limit == 0) {
+                    limit = 1;
                     RegSetValueExW(hKey, L"MessageNumberLimit", 0, REG_DWORD, (const BYTE*)&limit, sizeof(limit));
                 }
-                d.msiEnabled = enabled;
-                d.msiSupported = true;
-                anyChanged = true;
             }
+            d.msiEnabled = enabled;
+            anyChanged = true;
         }
     }
     return anyChanged;

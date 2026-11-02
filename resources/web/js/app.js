@@ -9,6 +9,9 @@ let allServices = [];
 let allAppx = [];
 let isTimerLocked = false;
 let currentThemeAccent = "cyan";
+let currentAppVersion = "";
+
+const TABS = { memory: 3, msi: 5, startup: 8, settings: 11, updates: 12 };
 
 function getLogoPathForTheme(accent) {
   if (!accent || accent === "cyan") return "/branding/wcs_logo_transparent.png";
@@ -47,17 +50,25 @@ try {
 function callNative(action, params = {}) {
   return new Promise((resolve) => {
     const id = reqId++;
-    pendingRequests.set(id, { resolve });
+    const timer = setTimeout(() => {
+      if (pendingRequests.has(id)) {
+        pendingRequests.delete(id);
+        resolve({ success: false, error: "timeout" });
+      }
+    }, 20000);
+    pendingRequests.set(id, { resolve, timer });
     if (window.chrome && window.chrome.webview) {
       try {
         window.chrome.webview.postMessage({ id, action, params });
       } catch (err) {
         console.error("callNative postMessage failed:", err);
+        clearTimeout(timer);
         pendingRequests.delete(id);
         resolve({ success: false, error: err ? err.message : "Bridge failure" });
       }
     } else {
       console.warn("Native bridge not attached, action:", action);
+      clearTimeout(timer);
       pendingRequests.delete(id);
       resolve({ success: false });
     }
@@ -71,7 +82,8 @@ if (window.chrome && window.chrome.webview) {
       const msg = event.data;
       if (!msg) return;
       if (msg.id && pendingRequests.has(msg.id)) {
-        const { resolve } = pendingRequests.get(msg.id);
+        const { resolve, timer } = pendingRequests.get(msg.id);
+        clearTimeout(timer);
         pendingRequests.delete(msg.id);
         resolve(msg.data);
       } else if (msg.event) {
@@ -94,8 +106,6 @@ function handleNativeEvent(event, data) {
   } else if (event === "appx_uninstall_done") {
     if (data.appx) renderAppx(data.appx);
     showToast(data.message || "Удаление UWP приложений завершено", !data.success);
-  } else if (event === "cleanup_done") {
-    handleCleanupResult(data);
   } else if (event === "game_boosted") {
     onGameBoosted(data);
   } else if (event === "game_exited") {
@@ -192,13 +202,15 @@ function applyTelemetryDOMUpdate(data) {
     if (dashTimerVal) {
       if (isTimerLocked) {
         dashTimerVal.innerHTML = "0.500 <small>ms</small>";
-        if (dashTimerBadge) { dashTimerBadge.textContent = "ЗАБЛОКИРОВАН"; dashTimerBadge.className = "dash-metric-badge badge-locked"; }
+        if (dashTimerBadge) { dashTimerBadge.style.removeProperty("background"); dashTimerBadge.style.removeProperty("color"); dashTimerBadge.textContent = "ЗАБЛОКИРОВАН"; dashTimerBadge.className = "dash-metric-badge badge-locked"; }
         if (dashTimerSub) dashTimerSub.textContent = "Zero-Drift Lock активен (0.5ms)";
         if (dashQuickTimer) dashQuickTimer.checked = true;
       } else {
         dashTimerVal.innerHTML = `${msStr.replace(" ms", "")} <small>ms</small>`;
         if (dashTimerBadge) {
           dashTimerBadge.textContent = "ПЛАВАЮЩИЙ";
+          dashTimerBadge.style.removeProperty("background");
+          dashTimerBadge.style.removeProperty("color");
           dashTimerBadge.className = "dash-metric-badge";
           dashTimerBadge.style.background = "rgba(255,255,255,0.08)";
           dashTimerBadge.style.color = "var(--text-dim)";
@@ -485,7 +497,12 @@ const TWEAK_NAMES = {
   mmcssGamesPriority: "Игровой приоритет мультимедиа (MMCSS)",
   disableNetworkThrottling: "Снятие сетевого ограничения Windows",
   tcpNoDelay: "Мгновенная отправка пакетов (TCP NoDelay)",
+  tcpAckFrequency: "Отключение задержки подтверждений TCP (AckFrequency)",
   tcpAutoTuning: "Автоподстройка окна приема TCP (Auto-Tuning)",
+  defaultTTL64: "Единый TTL пакетов (64 вместо 128)",
+  optimalMTU: "MTU 1500 для физических адаптеров",
+  bootuxDisabled: "Отключение анимации загрузки Windows",
+  powerThrottling: "Отключение энергосбережения фоновых процессов",
   flatMouseCurve: "Прямой отклик мыши 1:1 (кривая MarkC)",
   keyboardMaxSpeed: "Максимальная отзывчивость клавиатуры",
   disableTelemetry: "Отключение сбора телеметрии и слежения",
@@ -510,6 +527,9 @@ const TWEAK_DESCRIPTIONS = {
   mmcssGamesPriority: "Предоставляет 100% ресурсов планировщика потоков и снимает искусственные лимиты Windows для игровых процессов.",
   disableNetworkThrottling: "Отключает троттлинг сетевых пакетов Windows при одновременной нагрузке на процессор.",
   tcpNoDelay: "Отключает алгоритм задержки Nagle, отправляя сетевые пакеты в онлайн-играх без ожидания буфера.",
+  tcpAckFrequency: "Убирает задержку подтверждений TCP на выбранном интерфейсе - важно для игр с малым трафиком.",
+  bootuxDisabled: "Убирает заставку и анимацию загрузки - система доходит до рабочего стола чуть быстрее.",
+  powerThrottling: "Запрещает Windows искусственно замедлять фоновые процессы ради экономии энергии.",
   tcpAutoTuning: "Оптимизирует размер окна TCP и распределяет сетевой трафик между ядрами процессора без очередей пакетов.",
   flatMouseCurve: "Полностью отключает системное ускорение (акселерацию) курсора, обеспечивая честное движение 1:1.",
   keyboardMaxSpeed: "Устанавливает минимальную задержку перед повтором нажатий и максимальную скорость повтора клавиш.",
@@ -530,10 +550,10 @@ const PRESET_DEFINITIONS = {
       disableDynamicTick: true,
       usePlatformClockNo: true,
       usePlatformTickNo: true,
+      bootuxDisabled: true,
       ultimatePowerPlan: true,
       disableCoreParking: true,
-      disablePagingExecutive: true,
-      largeSystemCacheDisabled: true,
+      powerThrottling: true,
       gpuMsiMode: true,
       audioMsiMode: true,
       hagsEnabled: true,
@@ -542,7 +562,12 @@ const PRESET_DEFINITIONS = {
       mmcssGamesPriority: true,
       disableNetworkThrottling: true,
       tcpNoDelay: true,
+      tcpAckFrequency: true,
       tcpAutoTuning: true,
+      defaultTTL64: true,
+      optimalMTU: true,
+      disablePagingExecutive: true,
+      largeSystemCacheDisabled: true,
       flatMouseCurve: true,
       keyboardMaxSpeed: true,
       disableTelemetry: true,
@@ -561,10 +586,10 @@ const PRESET_DEFINITIONS = {
       disableDynamicTick: false,
       usePlatformClockNo: true,
       usePlatformTickNo: true,
+      bootuxDisabled: false,
       ultimatePowerPlan: false,
       disableCoreParking: true,
-      disablePagingExecutive: false,
-      largeSystemCacheDisabled: true,
+      powerThrottling: true,
       gpuMsiMode: true,
       audioMsiMode: true,
       hagsEnabled: true,
@@ -573,7 +598,12 @@ const PRESET_DEFINITIONS = {
       mmcssGamesPriority: true,
       disableNetworkThrottling: true,
       tcpNoDelay: true,
+      tcpAckFrequency: true,
       tcpAutoTuning: true,
+      defaultTTL64: false,
+      optimalMTU: true,
+      disablePagingExecutive: false,
+      largeSystemCacheDisabled: true,
       flatMouseCurve: true,
       keyboardMaxSpeed: true,
       disableTelemetry: true,
@@ -592,10 +622,10 @@ const PRESET_DEFINITIONS = {
       disableDynamicTick: false,
       usePlatformClockNo: false,
       usePlatformTickNo: false,
+      bootuxDisabled: false,
       ultimatePowerPlan: false,
       disableCoreParking: false,
-      disablePagingExecutive: false,
-      largeSystemCacheDisabled: false,
+      powerThrottling: false,
       gpuMsiMode: false,
       audioMsiMode: false,
       hagsEnabled: false,
@@ -604,7 +634,12 @@ const PRESET_DEFINITIONS = {
       mmcssGamesPriority: false,
       disableNetworkThrottling: false,
       tcpNoDelay: false,
+      tcpAckFrequency: false,
       tcpAutoTuning: false,
+      defaultTTL64: false,
+      optimalMTU: false,
+      disablePagingExecutive: false,
+      largeSystemCacheDisabled: false,
       flatMouseCurve: false,
       keyboardMaxSpeed: false,
       disableTelemetry: false,
@@ -863,7 +898,7 @@ function highlightPresetCard(presetName) {
   if (nameEl) {
     if (presetName === "EsportsUltra") {
       nameEl.textContent = "Competitive Games";
-      if (badgeEl) { badgeEl.textContent = "MAX FPS"; badgeEl.className = "dash-metric-badge badge-locked"; }
+      if (badgeEl) { badgeEl.textContent = "MAX FPS"; badgeEl.style.removeProperty("background"); badgeEl.style.removeProperty("color"); badgeEl.className = "dash-metric-badge badge-locked"; }
       if (subEl) subEl.textContent = "0.500ms • Direct MSI • Unpark";
     } else if (presetName === "CompetitiveGaming" || presetName === "BalancedGaming") {
       nameEl.textContent = "Balance";
@@ -871,16 +906,30 @@ function highlightPresetCard(presetName) {
       if (subEl) subEl.textContent = "0.500ms • Stream-Safe • Direct MSI";
     } else if (presetName === "WindowsDefault") {
       nameEl.textContent = "Windows Default";
-      if (badgeEl) { badgeEl.textContent = "СБРОС"; badgeEl.className = "dash-metric-badge"; badgeEl.style.background = "rgba(255,255,255,0.08)"; badgeEl.style.color = "var(--text-dim)"; }
+      if (badgeEl) { badgeEl.textContent = "СБРОС"; badgeEl.style.removeProperty("background"); badgeEl.style.removeProperty("color"); badgeEl.className = "dash-metric-badge"; badgeEl.style.background = "rgba(255,255,255,0.08)"; badgeEl.style.color = "var(--text-dim)"; }
       if (subEl) subEl.textContent = "Стандартные параметры Microsoft";
     }
   }
+}
+
+const dirtyTweaks = new Set();
+
+function syncApplyButton() {
+  const btn = document.getElementById("applyAllBtn") || document.querySelector(".footer-actions .btn-primary");
+  if (!btn) return;
+  if (!btn.dataset.labelHtml) btn.dataset.labelHtml = btn.innerHTML;
+  btn.disabled = dirtyTweaks.size === 0;
+  btn.innerHTML = dirtyTweaks.size > 0
+    ? btn.dataset.labelHtml.replace("Применить параметры", `Применить параметры (${dirtyTweaks.size})`)
+    : btn.dataset.labelHtml;
 }
 
 async function applyAllTweaks() {
   const res = await callNative("applyAllTweaks");
   if (res && res.success && res.tweaks) {
     syncTweaksUI(res.tweaks);
+    dirtyTweaks.clear();
+    syncApplyButton();
   }
 }
 
@@ -897,9 +946,24 @@ async function revertToDefaults() {
 // ----------------------------------------------------------------------------
 async function toggleTweak(tweakId, isChecked) {
   const res = await callNative("setTweak", { id: tweakId, value: isChecked });
-  if (res && res.tweaks) {
-    syncTweaksUI(res.tweaks);
+
+  if (!res || res.success === false || !res.tweaks) {
+    document.querySelectorAll(`input[onchange*="toggleTweak('${tweakId}'"]`).forEach((cb) => {
+      cb.checked = !isChecked;
+    });
+    showToast((res && (res.error || res.message)) || "Не удалось изменить параметр", true);
+    dirtyTweaks.delete(tweakId);
+    syncApplyButton();
+    return;
   }
+
+  syncTweaksUI(res.tweaks);
+  if (res.tweaks[tweakId] === !isChecked) {
+    dirtyTweaks.delete(tweakId);
+  } else {
+    dirtyTweaks.add(tweakId);
+  }
+  syncApplyButton();
 }
 
 async function toggleTimerLock() {
@@ -949,7 +1013,7 @@ async function trimWorkingSet() {
 }
 
 function openMemCleanerWindow() {
-  switchTab(2);
+  switchTab(TABS.memory);
 }
 
 function onMemoryUpdate(data) {
@@ -1281,6 +1345,11 @@ function renderServices(services) {
 
   hideServiceTooltip();
 
+  if (allServices.length === 0) {
+    container.innerHTML = `<div class="startup-empty-state">Службы не найдены. Нажмите «Обновить».</div>`;
+    return;
+  }
+
   if (!container._hasScrollTooltipListener) {
     container._hasScrollTooltipListener = true;
     container.addEventListener("scroll", hideServiceTooltip, { passive: true });
@@ -1457,9 +1526,18 @@ async function restoreSingleService(svcId, ev) {
 
 async function toggleServiceState(svcId, isChecked) {
   const svc = allServices.find(s => s.id === svcId);
+  const card = document.querySelector(`.service-card[data-id="${svcId}"]`);
+  const checkbox = card?.querySelector("input[type='checkbox']");
+  const label = card?.querySelector(".checkbox-label");
   const res = await callNative("setServiceState", { id: svcId, disable: !isChecked });
 
-  const card = document.querySelector(`.service-card[data-id="${svcId}"]`);
+  if (!res || !res.success) {
+    if (checkbox) checkbox.checked = !isChecked;
+    if (label) label.innerText = isChecked ? "Отключена" : "Активна";
+    showToast((res && (res.error || res.message || res.status)) || "Не удалось изменить состояние службы", true);
+    return;
+  }
+
   let badge = card?.querySelector(".service-status-badge");
   if (!badge && card) {
     const headerEl = card.querySelector(".service-header");
@@ -1577,6 +1655,11 @@ function renderAppx(items) {
   allAppx = items || [];
   const container = document.getElementById("appxCategoriesGrid");
   if (!container) return;
+
+  if (allAppx.length === 0) {
+    container.innerHTML = `<div class="startup-empty-state">Приложения не найдены. Нажмите «Обновить».</div>`;
+    return;
+  }
 
   const prevScrollTop = container.scrollTop;
   container.innerHTML = "";
@@ -1843,13 +1926,7 @@ function selectAllCleanup(select) {
   });
 }
 
-let cleanupSafetyTimer = null;
-
 function handleCleanupResult(data) {
-  if (cleanupSafetyTimer) {
-    clearTimeout(cleanupSafetyTimer);
-    cleanupSafetyTimer = null;
-  }
   const btn = document.getElementById("btnExecuteCleanup");
   if (btn) {
     btn.classList.remove("btn-spinning");
@@ -1910,17 +1987,11 @@ async function executeCleanup() {
 
   showToast("Запущена выборочная очистка системных кэшей...", false);
 
-  if (cleanupSafetyTimer) clearTimeout(cleanupSafetyTimer);
-  cleanupSafetyTimer = setTimeout(() => {
-    const b = document.getElementById("btnExecuteCleanup");
-    if (b && b.classList.contains("btn-spinning")) {
-      handleCleanupResult({ success: true, message: "Очистка успешно завершена!" });
-    }
-  }, 10000);
-
   try {
     const res = await callNative("executeCleanup", { options });
-    if (res) {
+    if (res && res.error === "timeout") {
+      handleCleanupResult({ success: false, error: "Превышено время ожидания" });
+    } else if (res) {
       handleCleanupResult(res);
     }
   } catch (err) {
@@ -1928,16 +1999,42 @@ async function executeCleanup() {
   }
 }
 
-async function deepCleanAction(actionName) {
-  await callNative("deepCleanAction", { action: actionName });
+async function deepCleanAction(actionName, btn) {
+  if (btn && btn.disabled) return;
+  if (btn) btn.disabled = true;
+  try {
+    const res = await callNative("deepCleanAction", { action: actionName });
+    if (res && res.success) {
+      showToast(res.message || res.status || "Операция успешно завершена!", false);
+    } else {
+      showToast((res && (res.error || res.message || res.status)) || "Не удалось выполнить операцию", true);
+    }
+  } catch (err) {
+    showToast(err?.message || "Ошибка при выполнении операции", true);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 // ----------------------------------------------------------------------------
 // Backup & Restore
 // ----------------------------------------------------------------------------
-async function createRestorePoint() {
+async function createRestorePoint(btn) {
   const desc = document.getElementById("restorePointDesc")?.value || "WCS Optimization Restore Point";
-  await callNative("createRestorePoint", { description: desc });
+  if (btn && btn.disabled) return;
+  if (btn) btn.disabled = true;
+  try {
+    const res = await callNative("createRestorePoint", { description: desc });
+    if (res && res.success) {
+      showToast(res.message || res.status || "Точка восстановления успешно создана!", false);
+    } else {
+      showToast((res && (res.error || res.message || res.status)) || "Не удалось создать точку восстановления", true);
+    }
+  } catch (err) {
+    showToast(err?.message || "Ошибка при создании точки восстановления", true);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 async function exportProfile() {
@@ -2019,6 +2116,12 @@ async function openAboutModal() {
     populateAboutModalSpecs(currentSpecs);
   }
 
+  modal.style.display = "flex";
+  modal.classList.remove("modal-exiting");
+  requestAnimationFrame(() => {
+    modal.classList.add("active");
+  });
+
   try {
     const res = await callNative("getSystemSpecs");
     if (res) {
@@ -2032,12 +2135,6 @@ async function openAboutModal() {
   } catch (err) {
     console.warn("Failed to fetch fresh system specs:", err);
   }
-
-  modal.style.display = "flex";
-  modal.classList.remove("modal-exiting");
-  requestAnimationFrame(() => {
-    modal.classList.add("active");
-  });
 }
 
 function closeAboutModal() {
@@ -2067,6 +2164,11 @@ function showConfirmModal(options = {}) {
     icon = "/icons/trash.png",
     danger = true
   } = options;
+
+  const activeConfirmModal = document.getElementById("confirmModal");
+  if (confirmModalResolver || (activeConfirmModal && activeConfirmModal.classList.contains("active"))) {
+    return Promise.resolve(false);
+  }
 
   return new Promise((resolve) => {
     confirmModalResolver = resolve;
@@ -2258,7 +2360,7 @@ function syncTweaksUI(t) {
   if (dashMsiVal) {
     if (t.gpuMsiMode && t.audioMsiMode) {
       dashMsiVal.textContent = "Direct MSI";
-      if (dashMsiBadge) { dashMsiBadge.textContent = "DIRECT IRQ"; dashMsiBadge.className = "dash-metric-badge badge-locked"; }
+      if (dashMsiBadge) { dashMsiBadge.textContent = "DIRECT IRQ"; dashMsiBadge.style.removeProperty("background"); dashMsiBadge.style.removeProperty("color"); dashMsiBadge.className = "dash-metric-badge badge-locked"; }
       if (dashMsiSub) dashMsiSub.textContent = "GPU & Audio разгружены";
     } else if (t.gpuMsiMode || t.audioMsiMode) {
       dashMsiVal.textContent = "MSI Частично";
@@ -2266,7 +2368,7 @@ function syncTweaksUI(t) {
       if (dashMsiSub) dashMsiSub.textContent = t.gpuMsiMode ? "GPU в MSI режиме" : "Audio в MSI режиме";
     } else {
       dashMsiVal.textContent = "Line-Based IRQ";
-      if (dashMsiBadge) { dashMsiBadge.textContent = "ОБЩАЯ ШИНА"; dashMsiBadge.className = "dash-metric-badge"; dashMsiBadge.style.background = "rgba(255,255,255,0.08)"; dashMsiBadge.style.color = "var(--text-dim)"; }
+      if (dashMsiBadge) { dashMsiBadge.textContent = "ОБЩАЯ ШИНА"; dashMsiBadge.style.removeProperty("background"); dashMsiBadge.style.removeProperty("color"); dashMsiBadge.className = "dash-metric-badge"; dashMsiBadge.style.background = "rgba(255,255,255,0.08)"; dashMsiBadge.style.color = "var(--text-dim)"; }
       if (dashMsiSub) dashMsiSub.textContent = "Стандартный опрос шины";
     }
   }
@@ -2807,16 +2909,32 @@ function renderMsiDevices(data) {
       catLabel = "Диски";
     }
 
-    const msiStatusHtml = dev.msiEnabled
-      ? `<span class="msi-status-tag active"><img src="/icons/bolt.png" style="width:11px;height:11px;margin-right:4px;vertical-align:middle;">MSI ВКЛ (Векторный режим)</span>`
-      : `<span class="msi-status-tag inactive">MSI ВЫКЛ (Линейный IRQ)</span>`;
+    const msiUnsupported = dev.msiSupported === false;
+    const msiRiskyBus = dev.category === "Storage" || dev.category === "USB";
+    const msiLocked = msiUnsupported || msiRiskyBus;
+    const msiLockReason = msiUnsupported
+      ? "Драйвер не поддерживает MSI"
+      : "Для этой шины включение MSI заблокировано";
+
+    const msiStatusHtml = msiUnsupported
+      ? `<span class="msi-status-tag inactive" title="${msiLockReason}">MSI НЕ ПОДДЕРЖИВАЕТСЯ</span>`
+      : (dev.msiEnabled
+        ? `<span class="msi-status-tag active"><img src="/icons/bolt.png" style="width:11px;height:11px;margin-right:4px;vertical-align:middle;">MSI ВКЛ (Векторный режим)</span>`
+        : `<span class="msi-status-tag inactive">MSI ВЫКЛ (Линейный IRQ)</span>`);
 
     const locationHtml = dev.location ? `<span class="msi-location-pill" title="Шина и адрес устройства">${escapeHtml(dev.location)}</span>` : "";
     const hwidHtml = dev.hardwareId ? `<span class="msi-hwid-pill" title="${escapeHtml(dev.hardwareId)}">${escapeHtml(dev.hardwareId)}</span>` : "";
 
     let controlsHtml = "";
     if (dev.canModify) {
-      controlsHtml = `
+      const switchTitle = msiLocked
+        ? msiLockReason
+        : (dev.msiEnabled ? "Отключить режим MSI" : "Включить режим MSI");
+      const warningHtml = msiRiskyBus
+        ? `<span class="msi-warn-badge" title="${msiLockReason}">Не поддерживается</span>`
+        : "";
+      const priorityHtml = dev.msiSupported
+        ? `
         <div class="msi-priority-group">
           <span class="msi-priority-label">Приоритет IRQ</span>
           <select class="custom-select msi-priority-select" title="Приоритет обработки прерываний (Affinity Policy)">
@@ -2826,10 +2944,16 @@ function renderMsiDevices(data) {
             <option value="3" ${dev.priority === 3 ? "selected" : ""}>Высокий</option>
           </select>
         </div>
+      `
+        : "";
+
+      controlsHtml = `
+        ${warningHtml}
+        ${priorityHtml}
         <div class="msi-switch-group">
           <span class="msi-switch-label">Режим MSI</span>
-          <label class="switch" title="${dev.msiEnabled ? 'Отключить режим MSI' : 'Включить режим MSI'}">
-            <input type="checkbox" class="msi-toggle-input" ${dev.msiEnabled ? "checked" : ""}>
+          <label class="switch${msiLocked ? " is-disabled" : ""}" title="${switchTitle}">
+            <input type="checkbox" class="msi-toggle-input" ${dev.msiEnabled ? "checked" : ""} ${msiLocked ? "disabled" : ""}>
             <span class="slider"></span>
           </label>
         </div>
@@ -3002,27 +3126,36 @@ function applyConfigToUI(cfg) {
 // Theme Accent System (Task 4.2)
 // ----------------------------------------------------------------------------
 function setThemeAccent(accent, save = true) {
-  if (!accent) accent = "cyan";
-  currentThemeAccent = accent;
+    const themes = ["cyan", "emerald", "crimson", "violet", "amber"];
+    if (!accent || !themes.includes(accent)) accent = "cyan";
+    currentThemeAccent = accent;
 
-  try {
-    localStorage.setItem("wcs_themeAccent", accent);
-  } catch (_) {}
+    try {
+        localStorage.setItem("wcs_themeAccent", accent);
+    } catch (_) {}
 
-  const themes = ["cyan", "emerald", "crimson", "violet", "amber"];
-  themes.forEach(t => document.body.classList.remove(`theme-${t}`));
-  document.body.classList.add(`theme-${accent}`);
+    themes.forEach(t => {
+        document.body.classList.remove(`theme-${t}`);
+        document.documentElement.classList.remove(`theme-${t}`);
+    });
+    document.body.classList.add(`theme-${accent}`);
+    document.documentElement.classList.add(`theme-${accent}`);
 
-  themes.forEach(t => {
-    const el = document.getElementById(`swatch-${t}`);
-    if (el) el.classList.toggle("active", t === accent);
-  });
+    themes.forEach(t => {
+        const el = document.getElementById(`swatch-${t}`);
+        if (el) el.classList.toggle("active", t === accent);
+    });
 
-  updateThemeLogos(accent);
+    updateThemeLogos(accent);
 
-  if (save) {
-    updateAppSetting("themeAccent", accent);
-  }
+    // Canvas charts keep their own palette in JS — repaint them with the new accent
+    if (typeof redrawHardwareCharts === "function") {
+        redrawHardwareCharts();
+    }
+
+    if (save) {
+        updateAppSetting("themeAccent", accent);
+    }
 }
 
 // ----------------------------------------------------------------------------
@@ -3053,7 +3186,7 @@ async function exportProfile() {
 
     const payload = {
       app: "WindowsConfigStudio",
-      version: "3.5",
+      version: currentAppVersion || "3.5",
       timestamp: new Date().toISOString(),
       theme: currentThemeAccent,
       tweaks: currentTweaks,
@@ -3180,8 +3313,17 @@ function renderMarkdownToHtml(markdownText) {
   const htmlParts = [];
   let inList = false;
 
+  // The changelog comes from a remote JSON feed; escape before any markup
+  // handling so a crafted release body cannot inject script into wcs.local.
+  const escapeHtml = (str) => String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+
   const formatInline = (str) => {
-    return str.replace(/\*\*(.*?)\*\*/g, '<strong class="changelog-bold">$1</strong>');
+    return escapeHtml(str).replace(/\*\*(.*?)\*\*/g, '<strong class="changelog-bold">$1</strong>');
   };
 
   for (let i = 0; i < lines.length; i++) {
@@ -3244,7 +3386,11 @@ function updateAppVersionUI(version) {
   if (!version) return;
   const raw = String(version).trim();
   const clean = raw.startsWith("v") || raw.startsWith("V") ? raw.slice(1) : raw;
-  const displayVer = clean.replace(/\s*pro\b/gi, "").trim();
+  const base = clean.replace(/\s*pro\b/gi, "").trim();
+  // Show MAJOR.MINOR only ("3.6.0" -> "3.6"), the patch segment is noise in the UI
+  const parts = base.split(".");
+  const displayVer = parts.length > 1 ? `${parts[0]}.${parts[1]}` : base;
+  currentAppVersion = displayVer;
 
   const headerVer = document.getElementById("headerAppVersion");
   if (headerVer) headerVer.innerText = `Windows Tweaker`;
@@ -3526,9 +3672,9 @@ async function refreshTweaksState() {
     if (res) {
       syncTweaksUI(res);
     }
-    if (currentTabIdx === 3) {
+    if (currentTabIdx === TABS.msi) {
       loadMsiDevices();
-    } else if (currentTabIdx === 8) {
+    } else if (currentTabIdx === TABS.startup) {
       loadStartupItems();
     }
     if (currentTabIdx === 7 && currentSubTabIdx === 2) {
@@ -3912,6 +4058,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   updateThemeLogos(currentThemeAccent);
   updateSidebarIndicator(0, true);
   initTabs();
+  syncApplyButton();
 
   document.addEventListener("keydown", (e) => {
     const confirmModal = document.getElementById("confirmModal");
@@ -4332,21 +4479,32 @@ const HARDWARE_HISTORY_LEN = 30;
 const cpuLoadHistory = new Array(HARDWARE_HISTORY_LEN).fill(0);
 const gpuLoadHistory = new Array(HARDWARE_HISTORY_LEN).fill(0);
 
-const CPU_CHART_THEME = {
-  stroke: '#00d2ff',
-  glow: 'rgba(0, 210, 255, 0.70)',
-  gradientTop: 'rgba(0, 210, 255, 0.35)',
-  gradientBottom: 'rgba(0, 210, 255, 0.01)',
-  pulseOuter: 'rgba(0, 210, 255, 0.40)'
-};
+// Chart colors are read from the live accent variables at draw time so that
+// switching the accent repaints the canvases immediately.
+const CPU_CHART_THEME = { accentVar: '--accent-cyan', fallback: '#00d2ff' };
+const GPU_CHART_THEME = { accentVar: '--accent-secondary', fallback: '#0a84ff' };
 
-const GPU_CHART_THEME = {
-  stroke: '#c084fc',
-  glow: 'rgba(192, 132, 252, 0.75)',
-  gradientTop: 'rgba(168, 85, 247, 0.35)',
-  gradientBottom: 'rgba(168, 85, 247, 0.01)',
-  pulseOuter: 'rgba(192, 132, 252, 0.45)'
-};
+function accentColorToRgba(hex, alpha) {
+  const raw = String(hex || '').trim().replace('#', '');
+  const full = raw.length === 3 ? raw.split('').map(c => c + c).join('') : raw;
+  if (!/^[0-9a-fA-F]{6}$/.test(full)) {
+    return `rgba(0, 210, 255, ${alpha})`;
+  }
+  const num = parseInt(full, 16);
+  return `rgba(${(num >> 16) & 255}, ${(num >> 8) & 255}, ${num & 255}, ${alpha})`;
+}
+
+function getChartPalette(preset) {
+  const styles = getComputedStyle(document.body);
+  const accent = styles.getPropertyValue(preset.accentVar).trim() || preset.fallback;
+  return {
+    stroke: accent,
+    glow: accentColorToRgba(accent, 0.70),
+    gradientTop: accentColorToRgba(accent, 0.35),
+    gradientBottom: accentColorToRgba(accent, 0.01),
+    pulseOuter: accentColorToRgba(accent, 0.40)
+  };
+}
 
 function renderSmoothSplineChart(canvasId, historyData, theme) {
   const canvas = document.getElementById(canvasId);
@@ -4483,8 +4641,8 @@ function renderSmoothSplineChart(canvasId, historyData, theme) {
 }
 
 function redrawHardwareCharts() {
-  renderSmoothSplineChart('cpuLoadCanvas', cpuLoadHistory, CPU_CHART_THEME);
-  renderSmoothSplineChart('gpuLoadCanvas', gpuLoadHistory, GPU_CHART_THEME);
+    renderSmoothSplineChart('cpuLoadCanvas', cpuLoadHistory, getChartPalette(CPU_CHART_THEME));
+    renderSmoothSplineChart('gpuLoadCanvas', gpuLoadHistory, getChartPalette(GPU_CHART_THEME));
 }
 
 function updateHardwareTelemetry(data) {

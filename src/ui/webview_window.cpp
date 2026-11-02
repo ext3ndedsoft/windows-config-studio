@@ -10,6 +10,7 @@
 #include <iostream>
 #include <fstream>
 #include <vector>
+#include <mutex>
 
 #include "third_party/webview2/build/native/include/WebView2EnvironmentOptions.h"
 
@@ -18,6 +19,7 @@ using namespace Microsoft::WRL;
 static ComPtr<ICoreWebView2Environment> s_sharedEnv = nullptr;
 static bool s_envCreating = false;
 static std::vector<std::function<void(ICoreWebView2Environment*)>> s_envWaiters;
+static std::mutex s_envMutex;
 
 #ifdef WCS_DEBUG_BUILD
 static void LogWV(const std::string& msg) {
@@ -43,12 +45,36 @@ WebViewWindow::WebViewWindow(HWND hWnd, const std::wstring& initialUrl, bool isM
 }
 
 WebViewWindow::~WebViewWindow() {
+    m_stopTrim = true;
+    if (m_trimThread.joinable()) {
+        m_trimThread.join();
+    }
+
     if (m_webView) {
+        if (m_hasNavStartingToken)  m_webView->remove_NavigationStarting(m_navStartingToken);
+        if (m_hasNavCompletedToken) m_webView->remove_NavigationCompleted(m_navCompletedToken);
+        if (m_hasWebMessageToken)   m_webView->remove_WebMessageReceived(m_webMessageToken);
         NativeBridge::Get().UnregisterWebView(m_webView.Get());
     }
     if (m_controller) {
+        if (m_hasAccelToken) m_controller->remove_AcceleratorKeyPressed(m_accelToken);
         m_controller->Close();
     }
+}
+
+void WebViewWindow::StartDeferredTrim() {
+    if (m_trimThread.joinable()) return;  // one trim per window is enough
+    m_trimThread = std::thread([this]() {
+        for (int i = 0; i < 40 && !m_stopTrim; ++i) {
+            Sleep(50);
+        }
+        if (m_stopTrim) return;
+        ComPtr<ICoreWebView2_19> w19;
+        if (m_webView && SUCCEEDED(m_webView.As(&w19)) && w19) {
+            w19->put_MemoryUsageTargetLevel(COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW);
+        }
+        TrimProcessMemory();
+    });
 }
 
 std::wstring WebViewWindow::GetWebRootPath() const {
@@ -143,8 +169,33 @@ bool WebViewWindow::Init(std::function<void(bool success)> onInitCompleted) {
                         settings->put_IsStatusBarEnabled(FALSE);
                     }
 
+                    // Navigation guard: only the local virtual host may be loaded.
+                    // Without this, any page the user is tricked into opening would
+                    // still own the native bridge (which runs elevated).
+                    m_hasNavStartingToken = SUCCEEDED(m_webView->add_NavigationStarting(
+                        Callback<ICoreWebView2NavigationStartingEventHandler>(
+                            [](ICoreWebView2* sender, ICoreWebView2NavigationStartingEventArgs* args) -> HRESULT {
+                                LPWSTR uri = nullptr;
+                                if (SUCCEEDED(args->get_Uri(&uri)) && uri) {
+                                    const bool allowed = (wcsncmp(uri, L"https://wcs.local/", 18) == 0);
+                                    if (!allowed) args->put_Cancel(TRUE);
+                                    CoTaskMemFree(uri);
+                                } else {
+                                    args->put_Cancel(TRUE);
+                                }
+                                return S_OK;
+                            }).Get(), &m_navStartingToken));
+
+                    // Nothing in this app should spawn a second WebView window.
+                    m_webView->add_NewWindowRequested(
+                        Callback<ICoreWebView2NewWindowRequestedEventHandler>(
+                            [](ICoreWebView2*, ICoreWebView2NewWindowRequestedEventArgs* args) -> HRESULT {
+                                args->put_Handled(TRUE);
+                                return S_OK;
+                            }).Get(), nullptr);
+
                     // Navigation Completed Listener
-                    m_webView->add_NavigationCompleted(
+                    m_hasNavCompletedToken = SUCCEEDED(m_webView->add_NavigationCompleted(
                         Callback<ICoreWebView2NavigationCompletedEventHandler>(
                             [this](ICoreWebView2* sender, ICoreWebView2NavigationCompletedEventArgs* args) -> HRESULT {
                                 BOOL isSuccess = FALSE;
@@ -159,36 +210,36 @@ bool WebViewWindow::Init(std::function<void(bool success)> onInitCompleted) {
                                     webView19->put_MemoryUsageTargetLevel(COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW);
                                 }
 
-                                // Delay memory trim by 2.0s so initial rendering and DOM setup settle, then purge startup working set
-                                std::thread([this]() {
-                                    Sleep(2000);
-                                    ComPtr<ICoreWebView2_19> w19;
-                                    if (m_webView && SUCCEEDED(m_webView.As(&w19)) && w19) {
-                                        w19->put_MemoryUsageTargetLevel(COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW);
-                                    }
-                                    TrimProcessMemory();
-                                }).detach();
+                                // Deferred trim; lifetime-safe (joined in the destructor)
+                                StartDeferredTrim();
 
                                 return S_OK;
-                            }).Get(), nullptr
-                    );
+                            }).Get(), &m_navCompletedToken
+                    ));
 
-                    // Suppress any default browser script dialogs (alert, confirm, prompt)
-                    m_webView->add_ScriptDialogOpening(
-                        Callback<ICoreWebView2ScriptDialogOpeningEventHandler>(
-                            [](ICoreWebView2* sender, ICoreWebView2ScriptDialogOpeningEventArgs* args) -> HRESULT {
-                                if (args) {
-                                    args->Accept();
-                                }
-                                return S_OK;
-                            }).Get(), nullptr
-                    );
+                    // Script dialogs are never used by this app; disable them instead of
+                    // auto-accepting (accept() would make confirm() return true).
+                    ComPtr<ICoreWebView2Settings3> settings3;
+                    if (SUCCEEDED(settings.As(&settings3)) && settings3) {
+                        settings3->put_AreDefaultScriptDialogsEnabled(FALSE);
+                    }
 
-                    // Hook WebMessage handler
-                    EventRegistrationToken token;
-                    m_webView->add_WebMessageReceived(
+                    // Hook WebMessage handler. Only the local virtual host is trusted:
+                    // anything else in this WebView must not reach the native bridge.
+                    m_hasWebMessageToken = SUCCEEDED(m_webView->add_WebMessageReceived(
                         Callback<ICoreWebView2WebMessageReceivedEventHandler>(
                             [this](ICoreWebView2* sender, ICoreWebView2WebMessageReceivedEventArgs* args) -> HRESULT {
+                                LPWSTR source = nullptr;
+                                bool trusted = false;
+                                if (SUCCEEDED(args->get_Source(&source)) && source) {
+                                    trusted = (wcsncmp(source, L"https://wcs.local/", 18) == 0);
+                                    CoTaskMemFree(source);
+                                }
+                                if (!trusted) {
+                                    LogWV("Rejected WebMessage from untrusted source");
+                                    return S_OK;
+                                }
+
                                 LPWSTR msg = nullptr;
                                 args->get_WebMessageAsJson(&msg);
                                 if (msg) {
@@ -197,8 +248,8 @@ bool WebViewWindow::Init(std::function<void(bool success)> onInitCompleted) {
                                 }
                                 return S_OK;
                             }).Get(),
-                        &token
-                    );
+                        &m_webMessageToken
+                    ));
 
                     NativeBridge::Get().RegisterWebView(m_webView.Get(), m_isMain);
 
@@ -206,8 +257,7 @@ bool WebViewWindow::Init(std::function<void(bool success)> onInitCompleted) {
                     m_controller->put_IsVisible(TRUE);
 
                     // Ensure PrintScreen (VK_SNAPSHOT) is never swallowed by WebView2
-                    EventRegistrationToken accelToken;
-                    m_controller->add_AcceleratorKeyPressed(
+                    m_hasAccelToken = SUCCEEDED(m_controller->add_AcceleratorKeyPressed(
                         Callback<ICoreWebView2AcceleratorKeyPressedEventHandler>(
                             [](ICoreWebView2Controller* sender, ICoreWebView2AcceleratorKeyPressedEventArgs* args) -> HRESULT {
                                 UINT key = 0;
@@ -216,8 +266,8 @@ bool WebViewWindow::Init(std::function<void(bool success)> onInitCompleted) {
                                 }
                                 return S_OK;
                             }).Get(),
-                        &accelToken
-                    );
+                        &m_accelToken
+                    ));
 
                     if (!m_initialUrl.empty()) {
                         LogWV("Navigating to: " + WideStrToUtf8(m_initialUrl));
@@ -236,21 +286,25 @@ bool WebViewWindow::Init(std::function<void(bool success)> onInitCompleted) {
         return true;
     }
 
-    s_envWaiters.push_back(createControllerWithEnv);
-
-    if (s_envCreating) {
-        return true;
+    {
+        std::lock_guard<std::mutex> lock(s_envMutex);
+        if (s_sharedEnv) {
+            createControllerWithEnv(s_sharedEnv.Get());
+            return true;
+        }
+        s_envWaiters.push_back(createControllerWithEnv);
+        if (s_envCreating) {
+            return true;
+        }
+        s_envCreating = true;
     }
-
-    s_envCreating = true;
     std::wstring userDataDir = GetUserDataDir();
     LogWV("Creating shared CoreWebView2Environment at: " + WideStrToUtf8(userDataDir));
 
     auto options = Make<CoreWebView2EnvironmentOptions>();
     options->put_AdditionalBrowserArguments(
-        L"--disable-features=RendererCodeIntegrity,PreloadMediaEngagementData,Translate,MediaRouter,OptimizationHints,InterestFeedContentSuggestions,CalculateNativeWinOcclusion,AutofillServerCommunication,SpareRendererForSitePerProcess,CertificateTransparencyComponentUpdater "
+        L"--disable-features=PreloadMediaEngagementData,Translate,MediaRouter,OptimizationHints,InterestFeedContentSuggestions,CalculateNativeWinOcclusion,AutofillServerCommunication,SpareRendererForSitePerProcess,CertificateTransparencyComponentUpdater "
         L"--autoplay-policy=no-user-gesture-required "
-        L"--renderer-process-limit=1 "
         L"--disable-background-networking "
         L"--disable-component-update "
         L"--disable-domain-reliability "
@@ -264,11 +318,9 @@ bool WebViewWindow::Init(std::function<void(bool success)> onInitCompleted) {
         L"--disable-hang-monitor "
         L"--disable-client-side-phishing-detection "
         L"--disable-component-extensions-with-background-pages "
-        L"--disable-ipc-flooding-protection "
         L"--enable-features=msWebView2LowMemoryMode,V8MemoryReducer "
         L"--enable-low-end-device-mode "
         L"--js-flags=\"--expose-gc --max-old-space-size=64\" "
-        L"--process-per-site"
     );
 
     HRESULT hr = CreateCoreWebView2EnvironmentWithOptions(
@@ -279,20 +331,28 @@ bool WebViewWindow::Init(std::function<void(bool success)> onInitCompleted) {
             [](HRESULT result, ICoreWebView2Environment* env) -> HRESULT {
                 if (FAILED(result) || !env) {
                     LogWV("ERROR: CreateCoreWebView2EnvironmentWithOptions failed: 0x" + std::to_string(result));
-                    for (auto& cb : s_envWaiters) cb(nullptr);
-                    s_envWaiters.clear();
-                    s_envCreating = false;
+                    std::vector<std::function<void(ICoreWebView2Environment*)>> waiters;
+                    {
+                        std::lock_guard<std::mutex> lock(s_envMutex);
+                        waiters.swap(s_envWaiters);
+                        s_envCreating = false;
+                    }
+                    for (auto& cb : waiters) cb(nullptr);
                     return result;
                 }
 
                 LogWV("CreateCoreWebView2EnvironmentWithOptions SUCCEEDED!");
-                s_sharedEnv = env;
-                s_envCreating = false;
+                std::vector<std::function<void(ICoreWebView2Environment*)>> waiters;
+                {
+                    std::lock_guard<std::mutex> lock(s_envMutex);
+                    s_sharedEnv = env;
+                    s_envCreating = false;
+                    waiters.swap(s_envWaiters);
+                }
 
-                for (auto& cb : s_envWaiters) {
+                for (auto& cb : waiters) {
                     cb(s_sharedEnv.Get());
                 }
-                s_envWaiters.clear();
                 return S_OK;
             }).Get()
     );

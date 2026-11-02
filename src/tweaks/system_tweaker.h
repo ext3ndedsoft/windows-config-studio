@@ -188,8 +188,19 @@ public:
     std::vector<ServiceItemInfo>& GetServiceList() { return m_services; }
     const std::vector<ServiceItemInfo>& GetServiceList() const { return m_services; }
 
+    // Locked snapshots for cross-thread readers (UI thread vs. scan workers).
+    std::vector<ServiceItemInfo> GetServicesSnapshot() const {
+        std::lock_guard<std::mutex> lock(m_servicesMutex);
+        return m_services;
+    }
+
     std::vector<AppxItemInfo>& GetAppxItems() { return m_appxItems; }
     const std::vector<AppxItemInfo>& GetAppxItems() const { return m_appxItems; }
+
+    std::vector<AppxItemInfo> GetAppxSnapshot() const {
+        std::lock_guard<std::mutex> lock(m_appxMutex);
+        return m_appxItems;
+    }
 
     CleanupOptions& GetCleanupOptions() { return m_cleanupOptions; }
     const CleanupOptions& GetCleanupOptions() const { return m_cleanupOptions; }

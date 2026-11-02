@@ -233,8 +233,22 @@ bool UpdateManager::IsNewerVersion(const std::string& currentVer, const std::str
     return rem > cur;
 }
 
+static bool IsSafeHttpUrl(const std::wstring& url) {
+    if (url.size() < 10 || url.size() > 2048) return false;
+    if (url.rfind(L"https://", 0) != 0 && url.rfind(L"http://", 0) != 0) return false;
+    for (wchar_t ch : url) {
+        if (ch == L'"' || ch == L'\'' || ch == L'`' || ch == L'\\' || ch == L'\r' || ch == L'\n' ||
+            ch == L'\t' || ch == L' ' || ch == L'&' || ch == L'|' || ch == L'^' || ch == L'%' ||
+            ch == L'<' || ch == L'>' || ch < 0x20) {
+            return false;
+        }
+    }
+    return true;
+}
+
 static std::string FetchUrlViaCurlProcess(const std::wstring& url) {
-    std::wstring cmd = L"\"C:\\Windows\\System32\\curl.exe\" -s -k -L --connect-timeout 5 -m 8 "
+    if (!IsSafeHttpUrl(url)) return "";
+    std::wstring cmd = L"\"C:\\Windows\\System32\\curl.exe\" -s -L --connect-timeout 5 -m 8 "
                        L"-H \"User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)\" "
                        L"-H \"Accept: application/vnd.github.v3+json\" \"" + url + L"\"";
     
@@ -277,6 +291,7 @@ static std::string FetchUrlViaCurlProcess(const std::wstring& url) {
 
 std::string UpdateManager::FetchUrlContent(const std::string& url) {
     std::wstring urlW = Utf8ToWideStr(url);
+    if (!IsSafeHttpUrl(urlW)) return "";
     ScopedHInternet hInternet(InternetOpenW(
         L"WindowsConfigStudio-Updater/3.0",
         INTERNET_OPEN_TYPE_PRECONFIG, NULL, NULL, 0));
@@ -289,7 +304,7 @@ std::string UpdateManager::FetchUrlContent(const std::string& url) {
         InternetSetOptionW(hInternet, INTERNET_OPTION_RECEIVE_TIMEOUT, &timeoutMs, sizeof(timeoutMs));
         InternetSetOptionW(hInternet, INTERNET_OPTION_SEND_TIMEOUT, &timeoutMs, sizeof(timeoutMs));
 
-        DWORD flags = INTERNET_FLAG_RELOAD | INTERNET_FLAG_DONT_CACHE | INTERNET_FLAG_IGNORE_CERT_CN_INVALID | INTERNET_FLAG_IGNORE_CERT_DATE_INVALID;
+        DWORD flags = INTERNET_FLAG_RELOAD | INTERNET_FLAG_DONT_CACHE;
         if (url.rfind("https://", 0) == 0) {
             flags |= INTERNET_FLAG_SECURE;
         }
@@ -986,7 +1001,11 @@ void UpdateManager::OpenDownloadUrl() {
 
     if (!url.empty()) {
         std::wstring wUrl = Utf8ToWideStr(url);
-        ShellExecuteW(NULL, L"open", wUrl.c_str(), NULL, NULL, SW_SHOWNORMAL);
+        // Only ever hand http(s) links to the shell: the URL comes from a remote
+        // JSON feed, and ShellExecuteW would happily launch file:/custom schemes.
+        if (IsSafeHttpUrl(wUrl)) {
+            ShellExecuteW(NULL, L"open", wUrl.c_str(), NULL, NULL, SW_SHOWNORMAL);
+        }
     }
 }
 

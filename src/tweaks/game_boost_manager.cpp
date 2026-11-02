@@ -92,6 +92,20 @@ void GameBoostManager::Stop() {
     if (m_workerThread.joinable()) {
         m_workerThread.join();
     }
+
+    {
+        std::lock_guard<std::mutex> lock(m_stateMutex);
+        for (const auto& [pid, track] : m_activeBoostedPids) {
+            if (!track.boostedPriority) continue;
+            ScopedHandle hProc(OpenProcess(PROCESS_SET_INFORMATION, FALSE, pid));
+            if (hProc) {
+                SetPriorityClass(hProc, NORMAL_PRIORITY_CLASS);
+            }
+        }
+        m_activeBoostedPids.clear();
+        m_activeGameName = "";
+        m_activePid = 0;
+    }
     DEBUG_LOG_INFO("GAME_BOOST", "GameBoostManager stopped");
 }
 
@@ -111,12 +125,33 @@ void GameBoostManager::CheckProcesses() {
     if (!cfg.gameBoostEnabled) {
         std::lock_guard<std::mutex> lock(m_stateMutex);
         if (!m_activeBoostedPids.empty()) {
+            for (const auto& [pid, track] : m_activeBoostedPids) {
+                if (!track.boostedPriority) continue;
+                ScopedHandle hProc(OpenProcess(PROCESS_SET_INFORMATION, FALSE, pid));
+                if (hProc) {
+                    SetPriorityClass(hProc, NORMAL_PRIORITY_CLASS);
+                }
+            }
             m_activeBoostedPids.clear();
             m_activeGameName = "";
             m_activePid = 0;
             NativeBridge::Get().BroadcastEvent("game_exited", { { "name", "" }, { "pid", 0 } });
         }
         return;
+    }
+
+    // Turning the priority boost off must restore every process we previously raised,
+    // even while a game is still running.
+    if (!cfg.boostHighPriority) {
+        std::lock_guard<std::mutex> lock(m_stateMutex);
+        for (auto& [pid, track] : m_activeBoostedPids) {
+            if (!track.boostedPriority) continue;
+            ScopedHandle hProc(OpenProcess(PROCESS_SET_INFORMATION, FALSE, pid));
+            if (hProc) {
+                SetPriorityClass(hProc, NORMAL_PRIORITY_CLASS);
+            }
+            track.boostedPriority = false;
+        }
     }
 
     ScopedHandle hSnap(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0));
@@ -622,7 +657,7 @@ static std::string HttpGet(const std::string& url) {
     InternetSetOptionW(hInternet, INTERNET_OPTION_CONNECT_TIMEOUT, &timeout, sizeof(timeout));
     InternetSetOptionW(hInternet, INTERNET_OPTION_RECEIVE_TIMEOUT, &timeout, sizeof(timeout));
 
-    DWORD flags = INTERNET_FLAG_RELOAD | INTERNET_FLAG_DONT_CACHE | INTERNET_FLAG_IGNORE_CERT_CN_INVALID | INTERNET_FLAG_IGNORE_CERT_DATE_INVALID;
+    DWORD flags = INTERNET_FLAG_RELOAD | INTERNET_FLAG_DONT_CACHE;
     if (url.rfind("https://", 0) == 0) flags |= INTERNET_FLAG_SECURE;
 
     HINTERNET hUrl = InternetOpenUrlW(hInternet, urlW.c_str(), NULL, 0, flags, 0);
@@ -644,6 +679,10 @@ static std::string HttpGet(const std::string& url) {
     }
     InternetCloseHandle(hInternet);
     return result;
+}
+
+static bool IsHttpsUrl(const std::string& url) {
+    return url.rfind("https://", 0) == 0;
 }
 
 static std::filesystem::path GetCoverCachePath(const std::string& key) {
@@ -684,12 +723,14 @@ static std::string DownloadAndCacheSteamCover(const std::string& gameTitle, cons
 
     uint32_t appId = knownAppId;
     std::string tinyImage = "";
+    bool anySearchResponse = false;
 
-    auto trySearchSteam = [](const std::string& term, uint32_t& outAppId, std::string& outTiny) -> bool {
+    auto trySearchSteam = [&anySearchResponse](const std::string& term, uint32_t& outAppId, std::string& outTiny) -> bool {
         if (term.empty()) return false;
         std::string searchUrl = "https://store.steampowered.com/api/storesearch/?term=" + UrlEncode(term) + "&l=english&cc=US";
         std::string jsonResp = HttpGet(searchUrl);
         if (jsonResp.empty()) return false;
+        anySearchResponse = true;
         try {
             auto j = nlohmann::json::parse(jsonResp);
             if (j.contains("items") && j["items"].is_array() && !j["items"].empty()) {
@@ -724,8 +765,12 @@ static std::string DownloadAndCacheSteamCover(const std::string& gameTitle, cons
     }
 
     if (appId == 0) {
-        std::ofstream mark(noCoverMarker);
-        mark << "0";
+        // Negative-cache only a real "no such game" answer, never a network failure:
+        // otherwise one offline run hides every cover forever.
+        if (anySearchResponse) {
+            std::ofstream mark(noCoverMarker);
+            mark << "0";
+        }
         return "";
     }
 
@@ -740,7 +785,7 @@ static std::string DownloadAndCacheSteamCover(const std::string& gameTitle, cons
         "https://steamcdn-a.akamaihd.net/steam/apps/" + std::to_string(appId) + "/header.jpg"
     };
 
-    if (!tinyImage.empty()) {
+    if (IsHttpsUrl(tinyImage)) {
         std::string tUrl = tinyImage;
         size_t qPos = tUrl.find('?');
         if (qPos != std::string::npos) tUrl = tUrl.substr(0, qPos);
@@ -777,13 +822,15 @@ static std::string DownloadAndCacheSteamCover(const std::string& gameTitle, cons
                 const auto& d = j[idStr]["data"];
                 if (d.contains("header_image") && d["header_image"].is_string()) {
                     std::string hUrl = d["header_image"].get<std::string>();
-                    std::string imgData = HttpGet(hUrl);
-                    if (imgData.size() > 1024) {
-                        std::ofstream out(cacheFile, std::ios::binary);
-                        if (out.is_open()) {
-                            out.write(imgData.data(), imgData.size());
-                            out.close();
-                            return "/covers/cache/" + key + ".jpg";
+                    if (IsHttpsUrl(hUrl)) {
+                        std::string imgData = HttpGet(hUrl);
+                        if (imgData.size() > 1024) {
+                            std::ofstream out(cacheFile, std::ios::binary);
+                            if (out.is_open()) {
+                                out.write(imgData.data(), imgData.size());
+                                out.close();
+                                return "/covers/cache/" + key + ".jpg";
+                            }
                         }
                     }
                 }
@@ -791,8 +838,12 @@ static std::string DownloadAndCacheSteamCover(const std::string& gameTitle, cons
         } catch (...) {}
     }
 
-    std::ofstream mark(noCoverMarker);
-    mark << std::to_string(appId);
+    // Persist "no cover" only when Steam actually answered; a failed download is
+    // transient and must be retried on the next fetch.
+    if (!dtResp.empty()) {
+        std::ofstream mark(noCoverMarker);
+        mark << std::to_string(appId);
+    }
     return "";
 }
 

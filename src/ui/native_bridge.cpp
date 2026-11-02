@@ -27,6 +27,36 @@ NativeBridge& NativeBridge::Get() {
 }
 
 NativeBridge::NativeBridge() {
+    StartWorker();
+}
+
+void NativeBridge::StartWorker() {
+    m_worker = std::thread([this]() {
+        for (;;) {
+            std::function<void()> job;
+            {
+                std::unique_lock<std::mutex> lock(m_jobMutex);
+                m_jobCv.wait(lock, [this]() { return m_workerStop || !m_jobs.empty(); });
+                if (m_workerStop) return;
+                job = std::move(m_jobs.front());
+                m_jobs.pop_front();
+            }
+            if (job) {
+                try { job(); } catch (...) {}
+            }
+        }
+    });
+    m_worker.detach();
+}
+
+bool NativeBridge::EnqueueJob(std::function<void()> job) {
+    {
+        std::lock_guard<std::mutex> lock(m_jobMutex);
+        if (m_jobs.size() >= kMaxQueuedJobs) return false;
+        m_jobs.push_back(std::move(job));
+    }
+    m_jobCv.notify_one();
+    return true;
 }
 
 void NativeBridge::RegisterWebView(ICoreWebView2* webView, bool isMain) {
@@ -148,11 +178,34 @@ void NativeBridge::BroadcastTelemetry() {
 }
 
 void NativeBridge::HandleWebMessage(ICoreWebView2* sender, const std::wstring& messageW) {
-    std::string messageUtf8 = WideToUtf8(messageW);
+    int64_t reqId = 0;
+    std::string action;
+
+    // Always answer with a matching id: the frontend awaits it forever otherwise.
+    auto sendError = [&](const std::string& what) {
+        nlohmann::json errResp;
+        errResp["id"] = reqId;
+        errResp["action"] = action + "_response";
+        errResp["success"] = false;
+        errResp["error"] = what;
+        errResp["data"] = { {"success", false}, {"error", what} };
+        if (sender) {
+            try {
+                sender->PostWebMessageAsJson(Utf8ToWide(errResp.dump()).c_str());
+            } catch (...) {}
+        }
+    };
+
     try {
+        const std::string messageUtf8 = WideToUtf8(messageW);
         nlohmann::json req = nlohmann::json::parse(messageUtf8);
-        int64_t reqId = req.value("id", (int64_t)0);
-        std::string action = req.value("action", "");
+        if (!req.is_object()) {
+            sendError("Invalid message format");
+            return;
+        }
+
+        reqId = req.value("id", (int64_t)0);
+        action = req.value("action", "");
         nlohmann::json params = req.value("params", nlohmann::json::object());
 
         auto isHeavy = [&action]() -> bool {
@@ -187,7 +240,7 @@ void NativeBridge::HandleWebMessage(ICoreWebView2* sender, const std::wstring& m
 
         if (isHeavy()) {
             if (sender) sender->AddRef();
-            std::thread([this, sender, reqId, action, params]() {
+            const bool queued = EnqueueJob([this, sender, reqId, action, params]() {
                 try {
                     nlohmann::json result;
                     try {
@@ -203,9 +256,7 @@ void NativeBridge::HandleWebMessage(ICoreWebView2* sender, const std::wstring& m
                     }
 
                     // Completion broadcast event notification
-                    if (action == "executeCleanup") {
-                        BroadcastEvent("cleanup_done", result);
-                    } else if (action == "applyPreset") {
+                    if (action == "applyPreset") {
                         BroadcastEvent("preset_applied", result);
                     } else if (action == "getMsiDevices" || action == "scanDevices" || action == "scanMsiDevices") {
                         BroadcastEvent("msi_devices_scanned", result);
@@ -254,7 +305,11 @@ void NativeBridge::HandleWebMessage(ICoreWebView2* sender, const std::wstring& m
                         sender->Release();
                     }
                 }
-            }).detach();
+            });
+            if (!queued) {
+                if (sender) sender->Release();
+                sendError("Слишком много операций в очереди, попробуйте ещё раз");
+            }
             return;
         }
 
@@ -268,15 +323,13 @@ void NativeBridge::HandleWebMessage(ICoreWebView2* sender, const std::wstring& m
 
         std::string respStr = resp.dump();
         std::wstring respW = Utf8ToWide(respStr);
-        sender->PostWebMessageAsJson(respW.c_str());
-    } catch (const std::exception& e) {
-        nlohmann::json errResp;
-        errResp["success"] = false;
-        errResp["error"] = e.what();
-        std::string errStr = errResp.dump();
         if (sender) {
-            sender->PostWebMessageAsJson(Utf8ToWide(errStr).c_str());
+            sender->PostWebMessageAsJson(respW.c_str());
         }
+    } catch (const std::exception& e) {
+        sendError(e.what());
+    } catch (...) {
+        sendError("Native operation failed");
     }
 }
 
@@ -366,9 +419,7 @@ nlohmann::json NativeBridge::ProcessAction(const std::string& action, const nloh
         return HandleDisableRecommendedServices();
     }
     // Appx
-    else if (action == "getAppx") {
-        return HandleGetAppx();
-    } else if (action == "scanAppx") {
+    else if (action == "scanAppx") {
         return HandleScanAppx();
     } else if (action == "selectAppx") {
         return HandleSelectAppx(params);
@@ -736,7 +787,7 @@ nlohmann::json NativeBridge::HandleGetSystemSuiteState() {
 
 nlohmann::json NativeBridge::HandleGetServices() {
     auto& tweaker = SystemTweaker::Get();
-    const auto& svcs = tweaker.GetServices();
+    const auto svcs = tweaker.GetServicesSnapshot();
     nlohmann::json list = nlohmann::json::array();
     for (const auto& s : svcs) {
         nlohmann::json item;
@@ -760,7 +811,7 @@ nlohmann::json NativeBridge::HandleGetServices() {
 
 nlohmann::json NativeBridge::HandleGetAppx() {
     auto& tweaker = SystemTweaker::Get();
-    const auto& items = tweaker.GetAppxItems();
+    const auto items = tweaker.GetAppxSnapshot();
     nlohmann::json list = nlohmann::json::array();
     for (const auto& a : items) {
         nlohmann::json item;
@@ -831,7 +882,8 @@ nlohmann::json NativeBridge::HandleApplyPreset(const nlohmann::json& params) {
     cfg.activePreset = static_cast<int>(TweaksEngine::Get().GetActivePreset());
     ConfigManager::Get().Save();
 
-    ShowToast(status, !ok);
+    // The UI reports the result itself (progress toast -> success toast);
+    // a native toast here produced a second, differently worded notification.
 
     nlohmann::json res;
     res["success"] = ok;
@@ -1854,13 +1906,9 @@ nlohmann::json NativeBridge::HandleCheckUpdates(const nlohmann::json& params) {
     res["channel"] = info.channel;
     res["error"] = info.errorMsg;
 
-    if (info.available) {
-        ShowToast("Доступно новое обновление: v" + info.latestVersion, false);
-    } else if (!info.errorMsg.empty()) {
-        ShowToast(info.errorMsg, true);
-    } else {
-        ShowToast("У вас установлена самая актуальная версия программы (v" + info.currentVersion + ")", false);
-    }
+    // No toast here on purpose: the UI already reports the outcome of a check
+    // (toast + update tab). Emitting one from native as well produced two
+    // identical notifications per click.
 
     return res;
 }

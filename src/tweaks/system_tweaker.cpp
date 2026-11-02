@@ -128,11 +128,12 @@ void SystemTweaker::InitAsync(std::function<void()> onComplete) {
 
         // 3. SSD parameter checks via direct registry (instant, 0ms)
         DWORD lastAccess = RegGetDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\FileSystem", L"NtfsDisableLastAccessUpdate", 0);
-        DWORD dot3 = RegGetDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\FileSystem", L"NtfsDisable8dot3NameCreation", 0);
-        DWORD trimVal = RegGetDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\FileSystem", L"NtfsDisableDeleteNotification", 0);
+        DWORD dot3 = RegGetDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\FileSystem", L"NtfsDisable8dot3NameCreation", 2);
+        DWORD trimVal = RegGetDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\FileSystem", L"DisableDeleteNotification", 0);
         {
             std::lock_guard<std::mutex> lock(m_configMutex);
-            m_ssdPerfSub.disableLastAccess = (lastAccess >= 1 || dot3 >= 1);
+            m_ssdPerfSub.disableLastAccess = (lastAccess == 1 || lastAccess == 3);
+            m_ssdPerfSub.disable8dot3Names = (dot3 == 1);
             m_ssdPerfSub.enableTrimSupport = (trimVal == 0);
         }
         m_ssdScanned.store(true);
@@ -413,19 +414,19 @@ void SystemTweaker::InitServiceDatabase() {
     addSvc("svc_sensors", "Служба датчиков ориентации и освещенности (SensorService)", "Управляет встроенными датчиками освещенности, гироскопами и автоматическим поворотом экрана", { L"SensorService", L"SensrSvc" }, SERVICE_DEMAND_START, true);
     addSvc("svc_termsrv", "Службы удаленных рабочих столов (TermService)", "Разрешает пользователям удаленно подключаться к этому компьютеру через протокол RDP", { L"TermService" }, SERVICE_DEMAND_START, false);
     addSvc("svc_spooler", "Диспетчер очереди печати (Spooler)", "Управляет очередью печати документов и передачей заданий на локальные и сетевые принтеры", { L"Spooler" }, SERVICE_AUTO_START, false);
-    addSvc("svc_wuauserv", "Центр обновления Windows (wuauserv)", "Автоматический поиск, фоновое скачивание и установка системных обновлений и исправлений безопасности", { L"wuauserv" }, SERVICE_DEMAND_START, true, true);
+    addSvc("svc_wuauserv", "Центр обновления Windows (wuauserv)", "Автоматический поиск, фоновое скачивание и установка системных обновлений и исправлений безопасности", { L"wuauserv" }, SERVICE_DEMAND_START, false, true);
     addSvc("svc_xbox", "Сетевые службы Xbox Live", "Обеспечивает авторизацию в учетной записи Xbox Live, сетевую игру и облачные сохранения", { L"XblAuthManager", L"XblGameSave", L"XboxNetApiSvc", L"XboxGipSvc" }, SERVICE_DEMAND_START, true);
     addSvc("svc_bth", "Служба поддержки Bluetooth (bthserv)", "Обнаружение, сопряжение и согласование работы беспроводных устройств Bluetooth (наушники, геймпады)", { L"bthserv" }, SERVICE_DEMAND_START, false);
     addSvc("svc_themes", "Темы оформления Windows (Themes)", "Управление визуальными темами, стилями оформления окон, обоями и графическими эффектами Aero", { L"Themes" }, SERVICE_AUTO_START, false);
     addSvc("svc_tablets", "Сенсорная клавиатура и рукописный ввод", "Обеспечивает работу экранной сенсорной клавиатуры и распознавание рукописного ввода пера", { L"TabletInputService" }, SERVICE_DEMAND_START, true);
     addSvc("svc_biometric", "Биометрическая служба Windows Hello (WbioSrvc)", "Сбор, защита и обработка биометрических данных для авторизации по отпечатку пальца или лицу", { L"WbioSrvc" }, SERVICE_DEMAND_START, false);
-    addSvc("svc_iphlpsvc", "Вспомогательная служба IP (IPv6 / IP Helper)", "Обеспечивает поддержку туннелирования IPv6 (6to4, ISATAP, Teredo) и расширенных сетевых протоколов", { L"iphlpsvc" }, SERVICE_AUTO_START, true);
+    addSvc("svc_iphlpsvc", "Вспомогательная служба IP (IPv6 / IP Helper)", "Обеспечивает поддержку туннелирования IPv6 (6to4, ISATAP, Teredo) и расширенных сетевых протоколов", { L"iphlpsvc" }, SERVICE_AUTO_START, false);
     addSvc("svc_userdata", "Служба данных пользователя (UserDataSvc)", "Управляет доступом системных приложений к локальным контактам, календарям и персональным данным", { L"UserDataSvc", L"UnistoreSvc" }, SERVICE_DEMAND_START, false);
-    addSvc("svc_wscsvc", "Центр обеспечения безопасности Windows (wscsvc)", "Отслеживает и сообщает параметры работоспособности антивируса, брандмауэра и безопасности системы", { L"wscsvc" }, SERVICE_AUTO_START, true);
+    addSvc("svc_wscsvc", "Центр обеспечения безопасности Windows (wscsvc)", "Отслеживает и сообщает параметры работоспособности антивируса, брандмауэра и безопасности системы", { L"wscsvc" }, SERVICE_AUTO_START, false);
     addSvc("svc_diagtrack", "Служба сбора диагностических данных и телеметрии (DiagTrack)", "Собирает диагностическую информацию о работе Windows, сбоях и передает телеметрию в Microsoft", { L"DiagTrack", L"dmwappushservice" }, SERVICE_AUTO_START, true);
     addSvc("svc_pcasvc", "Помощник по совместимости программ (PcaSvc)", "Отслеживает ошибки запуска старых программ и автоматически применяет параметры совместимости", { L"PcaSvc" }, SERVICE_AUTO_START, true);
     addSvc("svc_defrag", "Оптимизация и дефрагментация дисков (defragsvc)", "Оптимизирует файловую систему жестких дисков (дефрагментация) и твердотельных накопителей (TRIM)", { L"defragsvc" }, SERVICE_DEMAND_START, false);
-    addSvc("svc_dosvc", "Оптимизация доставки обновлений (Delivery Optimization)", "Пиринговая (P2P) передача и скачивание обновлений Windows и приложений Microsoft Store", { L"DoSvc" }, SERVICE_AUTO_START, true);
+    addSvc("svc_dosvc", "Оптимизация доставки обновлений (Delivery Optimization)", "Пиринговая (P2P) передача и скачивание обновлений Windows и приложений Microsoft Store", { L"DoSvc" }, SERVICE_AUTO_START, false);
     addSvc("svc_pimindex", "Служба индексации контактов (PimIndexMaintenanceSvc)", "Индексирует контактные данные пользователей для быстрого локального поиска", { L"PimIndexMaintenanceSvc" }, SERVICE_DEMAND_START, true);
     addSvc("svc_winstore", "Служба установки Microsoft Store и пакетов AppX", "Обеспечивает фоновую инфраструктуру установки, обновления и развертывания приложений магазина Store", { L"InstallService", L"AppXSvc" }, SERVICE_DEMAND_START, false, true);
     addSvc("svc_remotereg", "Дистанционное управление реестром (RemoteRegistry)", "Позволяет удаленным пользователям просматривать и изменять параметры реестра на этом компьютере", { L"RemoteRegistry" }, SERVICE_DEMAND_START, true);
@@ -438,13 +439,13 @@ void SystemTweaker::InitServiceDatabase() {
     addSvc("svc_bcastdvr", "Служба фоновой записи игр и трансляций (BcastDVR)", "Фоновая запись видео игрового процесса (Game DVR), захват клипов и прямые трансляции", { L"BcastDVRUserService" }, SERVICE_DEMAND_START, true);
     addSvc("svc_cbdhsvc", "Служба облачного буфера обмена (cbdhsvc)", "Синхронизирует историю буфера обмена (Win+V) между устройствами через облако Microsoft", { L"cbdhsvc" }, SERVICE_DEMAND_START, false);
     addSvc("svc_wlidsvc", "Помощник по входу в учетную запись Microsoft (wlidsvc)", "Обеспечивает проверку подлинности и вход в систему с использованием учетной записи Microsoft", { L"wlidsvc" }, SERVICE_DEMAND_START, false);
-    addSvc("svc_ikeext", "Модули ключей IPsec для IKE и AuthIP (IKEEXT)", "Управляет ключами шифрования и проверкой подлинности для безопасных сетевых соединений IPsec и VPN", { L"IKEEXT" }, SERVICE_DEMAND_START, true);
-    addSvc("svc_fax", "Служба факсов и телефонии (Fax)", "Управляет отправкой, приемом и печатью факсов, а также модемным телефонным набором", { L"Fax", L"TapiSrv" }, SERVICE_DEMAND_START, true);
+    addSvc("svc_ikeext", "Модули ключей IPsec для IKE и AuthIP (IKEEXT)", "Управляет ключами шифрования и проверкой подлинности для безопасных сетевых соединений IPsec и VPN", { L"IKEEXT" }, SERVICE_DEMAND_START, false);
+    addSvc("svc_fax", "Служба факсов и телефонии (Fax)", "Управляет отправкой, приемом и печатью факсов, а также модемным телефонным набором", { L"Fax", L"TapiSrv" }, SERVICE_DEMAND_START, false);
     addSvc("svc_dps", "Служба диагностической политики (DPS)", "Обнаруживает неполадки в работе компонентов Windows и запускает средства устранения проблем", { L"DPS", L"WdiServiceHost", L"WdiSystemHost" }, SERVICE_AUTO_START, true, true);
     addSvc("svc_wersvc", "Служба регистрации ошибок Windows (WerSvc)", "Формирует отчеты о падениях программ и системных ошибках для отправки в службу поддержки Microsoft", { L"WerSvc" }, SERVICE_DEMAND_START, true, true);
     addSvc("svc_webclient", "Служба веб-клиента WebDAV (WebClient)", "Позволяет программам Windows открывать, редактировать и сохранять файлы на серверах WebDAV", { L"WebClient" }, SERVICE_DEMAND_START, true);
     addSvc("svc_wmiap", "Адаптер производительности WMI (wmiApSrv)", "Предоставляет данные системных счетчиков производительности через библиотеки WMI", { L"wmiApSrv" }, SERVICE_DEMAND_START, true);
-    addSvc("svc_wwansvc", "Служба автонастройки беспроводных сетей WWAN (модемы)", "Управляет встроенными и USB мобильными модемами сотовых сетей 3G/4G/5G и SIM-картами", { L"WwanSvc" }, SERVICE_DEMAND_START, true);
+    addSvc("svc_wwansvc", "Служба автонастройки беспроводных сетей WWAN (модемы)", "Управляет встроенными и USB мобильными модемами сотовых сетей 3G/4G/5G и SIM-картами", { L"WwanSvc" }, SERVICE_DEMAND_START, false);
     addSvc("svc_wifidirect", "Служба поддержки беспроводных дисплеев (Wi-Fi Direct)", "Обеспечивает подключение беспроводных мониторов, Miracast и прямое соединение по Wi-Fi Direct", { L"WiFiDirectServicesSupportService" }, SERVICE_DEMAND_START, true);
     addSvc("svc_scard", "Служба смарт-карт (SCardSvr)", "Управляет доступом к физическим смарт-картам, криптографическим USB-токенам и аппаратным ключам", { L"SCardSvr" }, SERVICE_DEMAND_START, true);
     addSvc("svc_wallet", "Служба электронного кошелька (WalletService)", "Обеспечивает работу платежной системы Windows Wallet и бесконтактных NFC транзакций", { L"WalletService" }, SERVICE_DEMAND_START, true);
@@ -649,8 +650,20 @@ void SystemTweaker::DetectSystemState() {
     m_sysConfig.autoKillHungApps = m_sysConfig.reduceHungAppTimeout;
 
     // Persist browsers
-    DWORD persistBrowsers = RegGetDword(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced", L"PersistBrowsers", 0);
+    DWORD persistBrowsers = RegGetDword(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced", L"PersistBrowsers", 1);
     m_sysConfig.disablePersistBrowsers = (persistBrowsers == 0);
+
+    // Finish setup (SCOOBE) suggestion
+    DWORD scoobe = RegGetDword(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\UserProfileEngagement", L"ScoobeSystemSettingEnabled", 1);
+    m_sysConfig.disableFinishSetup = (scoobe == 0);
+
+    // Verbose startup/shutdown status messages
+    DWORD verbose = RegGetDword(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System", L"VerboseStatus", 0);
+    m_sysConfig.verboseStatus = (verbose == 1);
+
+    // .NET Framework 4 strong crypto
+    DWORD strongCrypto = RegGetDword(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\.NETFramework\\v4.0.30319", L"SchUseStrongCrypto", 0);
+    m_sysConfig.allowNetFramework4 = (strongCrypto == 1);
 
     // BSOD auto restart
     DWORD autoReboot = RegGetDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\CrashControl", L"AutoReboot", 1);
@@ -709,9 +722,10 @@ void SystemTweaker::DetectSecurityState() {
     m_secConfig.disableCpuMitigations = (featOverride == 3);
 
     // VBS & HVCI Core Isolation
-    DWORD vbs = RegGetDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\DeviceGuard", L"EnableVirtualizationBasedSecurity", 0);
-    DWORD hvci = RegGetDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\DeviceGuard\\Scenarios\\HypervisorEnforcedCodeIntegrity", L"Enabled", 0);
-    m_secConfig.disableVbsHvci = (vbs == 0 && hvci == 0);
+    // Absent values mean "Windows default" (VBS on in Win11, off in Win10): only an explicit 0 is "disabled".
+    DWORD vbs = RegGetDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\DeviceGuard", L"EnableVirtualizationBasedSecurity", 2);
+    DWORD hvci = RegGetDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\DeviceGuard\\Scenarios\\HypervisorEnforcedCodeIntegrity", L"Enabled", 2);
+    m_secConfig.disableVbsHvci = (vbs == 0 || hvci == 0);
 
     // TTL
     DWORD ttl = RegGetDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters", L"DefaultTTL", 128);
@@ -1028,19 +1042,55 @@ bool SystemTweaker::ApplySingleSystemTweak(const std::string& tweakId, bool val,
     }
     else if (tweakId == "classicPhotoViewer") {
         m_sysConfig.classicPhotoViewer = val;
+        struct PvAssoc { const wchar_t* progId; const wchar_t* ext; };
+        static const PvAssoc assocs[] = {
+            { L"PhotoViewer.FileAssoc.Tiff", L".tif" },
+            { L"PhotoViewer.FileAssoc.Tiff", L".tiff" },
+            { L"PhotoViewer.FileAssoc.Bitmap", L".bmp" },
+            { L"PhotoViewer.FileAssoc.Jpeg", L".jpg" },
+            { L"PhotoViewer.FileAssoc.Jpeg", L".jpeg" },
+            { L"PhotoViewer.FileAssoc.Png", L".png" }
+        };
         if (val) {
-            const wchar_t* dll = L"%SystemRoot%\\System32\\rundll32.exe \"%ProgramFiles%\\Windows Photo Viewer\\PhotoViewer.dll\", ImageView_Fullscreen %1";
-            RegSetString(HKEY_CLASSES_ROOT, L"PhotoViewer.FileAssoc.Tiff\\shell\\open\\command", L"", dll);
-            RegSetString(HKEY_CLASSES_ROOT, L"PhotoViewer.FileAssoc.Bitmap\\shell\\open\\command", L"", dll);
-            RegSetString(HKEY_CLASSES_ROOT, L"PhotoViewer.FileAssoc.Jpeg\\shell\\open\\command", L"", dll);
-            RegSetString(HKEY_CLASSES_ROOT, L"PhotoViewer.FileAssoc.Png\\shell\\open\\command", L"", dll);
+            // The legacy viewer only exists on Win7/8 upgrade paths; check the DLL before registering associations.
+            wchar_t programFiles[MAX_PATH] = { 0 };
+            DWORD pfLen = GetEnvironmentVariableW(L"ProgramFiles", programFiles, MAX_PATH);
+            std::wstring dllPath = (pfLen > 0 && pfLen < MAX_PATH) ? std::wstring(programFiles) + L"\\Windows Photo Viewer\\PhotoViewer.dll" : std::wstring();
+            if (!dllPath.empty() && GetFileAttributesW(dllPath.c_str()) != INVALID_FILE_ATTRIBUTES) {
+                // RegSetString stores REG_SZ, and the shell only expands %variables% in REG_EXPAND_SZ commands,
+                // so the command is written with absolute paths instead of %SystemRoot%/%ProgramFiles%.
+                wchar_t sysDir[MAX_PATH] = { 0 };
+                GetSystemDirectoryW(sysDir, MAX_PATH);
+                std::wstring command = std::wstring(L"\"") + sysDir + L"\\rundll32.exe\" \"" + dllPath + L"\", ImageView_Fullscreen %1";
+                const wchar_t* progIds[] = { L"PhotoViewer.FileAssoc.Tiff", L"PhotoViewer.FileAssoc.Bitmap", L"PhotoViewer.FileAssoc.Jpeg", L"PhotoViewer.FileAssoc.Png" };
+                for (const wchar_t* progId : progIds) {
+                    std::wstring cmdKey = std::wstring(progId) + L"\\shell\\open\\command";
+                    if (RegGetString(HKEY_CLASSES_ROOT, cmdKey, L"").empty()) {
+                        RegSetString(HKEY_CLASSES_ROOT, cmdKey, L"", command);
+                    }
+                }
+                // OpenWithProgids is what actually makes the viewer appear in "Open with"; writing only the
+                // ProgID command (as before) changed nothing the user could see.
+                for (const auto& a : assocs) {
+                    RegSetString(HKEY_CLASSES_ROOT, std::wstring(a.ext) + L"\\OpenWithProgids", a.progId, L"");
+                }
+                outMsg = "Классический просмотр фотографий активирован";
+            } else {
+                outMsg = "Классический просмотрщик недоступен: Windows Photo Viewer не установлен";
+            }
+        } else {
+            for (const auto& a : assocs) {
+                RegDeleteVal(HKEY_CLASSES_ROOT, std::wstring(a.ext) + L"\\OpenWithProgids", a.progId);
+            }
+            outMsg = "Просмотр фотографий по умолчанию";
         }
-        outMsg = val ? "Классический просмотр фотографий активирован" : "Просмотр фотографий по умолчанию";
     }
     else if (tweakId == "disableStickyKeys") {
         m_sysConfig.disableStickyKeys = val;
         STICKYKEYS sk = { sizeof(sk) };
-        sk.dwFlags = val ? (SKF_AVAILABLE | SKF_CONFIRMHOTKEY) : (SKF_AVAILABLE | SKF_HOTKEYACTIVE | SKF_CONFIRMHOTKEY);
+        // 0x1FE is the documented default Flags set (available, hotkey active, confirm, sound, indicator,
+        // audible feedback, tristate, two-keys-off); the old revert dropped the sound/indicator bits.
+        sk.dwFlags = val ? (SKF_AVAILABLE | SKF_CONFIRMHOTKEY) : 0x1FE;
         SystemParametersInfoW(SPI_SETSTICKYKEYS, sizeof(sk), &sk, SPIF_UPDATEINIFILE | SPIF_SENDCHANGE);
         outMsg = val ? "Залипание клавиш отключено" : "Залипание клавиш включено";
     }
@@ -1062,8 +1112,14 @@ bool SystemTweaker::ApplySingleSystemTweak(const std::string& tweakId, bool val,
     }
     else if (tweakId == "allowNetFramework4") {
         m_sysConfig.allowNetFramework4 = val;
-        RegSetDword(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\.NETFramework\\v4.0.30319", L"SchUseStrongCrypto", val ? 1 : 0);
-        RegSetDword(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Wow6432Node\\Microsoft\\.NETFramework\\v4.0.30319", L"SchUseStrongCrypto", val ? 1 : 0);
+        if (val) {
+            RegSetDword(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\.NETFramework\\v4.0.30319", L"SchUseStrongCrypto", 1);
+            RegSetDword(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Wow6432Node\\Microsoft\\.NETFramework\\v4.0.30319", L"SchUseStrongCrypto", 1);
+        } else {
+            // Absence is the .NET default (strong crypto on for 4.6+ apps); 0 would downgrade TLS to legacy ciphers.
+            RegDeleteVal(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\.NETFramework\\v4.0.30319", L"SchUseStrongCrypto");
+            RegDeleteVal(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Wow6432Node\\Microsoft\\.NETFramework\\v4.0.30319", L"SchUseStrongCrypto");
+        }
         outMsg = val ? "Поддержка .NET Framework 4 настроена" : ".NET Framework по умолчанию";
     }
     else if (tweakId == "autoEndTasks") {
@@ -1112,8 +1168,10 @@ bool SystemTweaker::ApplySingleSystemTweak(const std::string& tweakId, bool val,
             RegSetString(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\SafeBoot\\Minimal\\MSIServer", L"", L"Service");
             RegSetString(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\SafeBoot\\Network\\MSIServer", L"", L"Service");
         } else {
-            RegDeleteVal(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\SafeBoot\\Minimal\\MSIServer", L"");
-            RegDeleteVal(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\SafeBoot\\Network\\MSIServer", L"");
+            // Delete the whole subkey: leaving MSIServer behind (even without the default value) still makes
+            // SafeBoot treat it as a driver entry, so the previous "delete value only" revert was incomplete.
+            RegDeleteTreeW(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\SafeBoot\\Minimal\\MSIServer");
+            RegDeleteTreeW(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\SafeBoot\\Network\\MSIServer");
         }
         outMsg = val ? "Служба MSI Installer в Safe Mode разрешена" : "MSI в Safe Mode по умолчанию";
     }
@@ -1153,7 +1211,8 @@ bool SystemTweaker::ApplySingleSystemTweak(const std::string& tweakId, bool val,
         m_sysConfig.disableAllEventLogs = val;
         RegSetDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\WMI\\Autologger\\EventLog-Application", L"Start", val ? 0 : 1);
         RegSetDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\WMI\\Autologger\\EventLog-System", L"Start", val ? 0 : 1);
-        RegSetDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\WMI\\Autologger\\EventLog-Security", L"Start", val ? 0 : 1);
+        // Never disable EventLog-Security: audit records are a security requirement, not telemetry.
+        RegSetDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\WMI\\Autologger\\EventLog-Security", L"Start", 1);
         outMsg = val ? "Создание логов системных журналов отключено" : "Системные журналы ведутся";
     }
     return true;
@@ -1174,10 +1233,93 @@ bool SystemTweaker::ApplySystemTweaks(std::string& outMsg) {
     ApplySingleSystemTweak("reduceHungAppTimeout", m_sysConfig.reduceHungAppTimeout, outMsg);
     ApplySingleSystemTweak("disablePersistBrowsers", m_sysConfig.disablePersistBrowsers, outMsg);
     ApplySingleSystemTweak("disableFinishSetup", m_sysConfig.disableFinishSetup, outMsg);
+    ApplySingleSystemTweak("verboseStatus", m_sysConfig.verboseStatus, outMsg);
+    ApplySingleSystemTweak("allowNetFramework4", m_sysConfig.allowNetFramework4, outMsg);
+    ApplySingleSystemTweak("hideUserAccountsOnLogon", m_sysConfig.hideUserAccountsOnLogon, outMsg);
+    ApplySingleSystemTweak("requireCtrlAltDel", m_sysConfig.requireCtrlAltDel, outMsg);
+    ApplySingleSystemTweak("enableMsiSafeMode", m_sysConfig.enableMsiSafeMode, outMsg);
     ApplySingleSystemTweak("disableBsodAutoRestart", m_sysConfig.disableBsodAutoRestart, outMsg);
     ApplySingleSystemTweak("disableAllEventLogs", m_sysConfig.disableAllEventLogs, outMsg);
     outMsg = "Все системные настройки успешно применены";
     return true;
+}
+
+// -----------------------------------------------------------------------------
+// Hosts telemetry block (marker-delimited, idempotent)
+// -----------------------------------------------------------------------------
+static const std::string kHostsBlockBegin = "# BEGIN WCS TELEMETRY BLOCK";
+static const std::string kHostsBlockEnd = "# END WCS TELEMETRY BLOCK";
+
+static std::wstring GetHostsFilePath() {
+    wchar_t systemRoot[MAX_PATH] = { 0 };
+    DWORD len = GetEnvironmentVariableW(L"SystemRoot", systemRoot, MAX_PATH);
+    std::wstring root = (len > 0 && len < MAX_PATH) ? systemRoot : L"C:\\Windows";
+    return root + L"\\System32\\drivers\\etc\\hosts";
+}
+
+static void ApplyHostsTelemetryBlock(bool enable) {
+    std::wstring hostsPath = GetHostsFilePath();
+
+    std::string content;
+    {
+        std::ifstream in(hostsPath, std::ios::binary);
+        if (in.is_open()) {
+            std::ostringstream ss;
+            ss << in.rdbuf();
+            content = ss.str();
+        }
+    }
+
+    bool hasBlock = (content.find(kHostsBlockBegin) != std::string::npos);
+    if (enable == hasBlock) {
+        return;
+    }
+
+    // One-time backup next to the hosts file
+    std::wstring backupPath = hostsPath + L".wcsbak";
+    if (GetFileAttributesW(backupPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        std::ofstream backup(backupPath, std::ios::binary | std::ios::trunc);
+        if (backup.is_open()) {
+            backup.write(content.data(), (std::streamsize)content.size());
+        }
+    }
+
+    if (enable) {
+        std::ofstream hosts(hostsPath, std::ios::binary | std::ios::app);
+        if (hosts.is_open()) {
+            if (!content.empty() && content.back() != '\n') {
+                hosts << "\n";
+            }
+            hosts << kHostsBlockBegin << "\n";
+            hosts << "0.0.0.0 vortex.data.microsoft.com\n";
+            hosts << "0.0.0.0 telemetry.microsoft.com\n";
+            hosts << "0.0.0.0 watson.telemetry.microsoft.com\n";
+            hosts << "0.0.0.0 diagnostics.support.microsoft.com\n";
+            hosts << kHostsBlockEnd << "\n";
+        }
+    } else {
+        size_t beginPos = content.find(kHostsBlockBegin);
+        if (beginPos == std::string::npos) {
+            return;
+        }
+        size_t endPos = content.find(kHostsBlockEnd, beginPos);
+        if (endPos == std::string::npos) {
+            // Truncated/legacy block without END marker: strip everything from BEGIN to EOF.
+            endPos = content.size();
+        } else {
+            endPos += kHostsBlockEnd.size();
+            if (endPos < content.size() && content[endPos] == '\r') endPos++;
+            if (endPos < content.size() && content[endPos] == '\n') endPos++;
+        }
+
+        std::string rewritten = content.substr(0, beginPos) + content.substr(endPos);
+        std::ofstream hosts(hostsPath, std::ios::binary | std::ios::trunc);
+        if (hosts.is_open()) {
+            hosts.write(rewritten.data(), (std::streamsize)rewritten.size());
+        }
+    }
+
+    SystemTweaker::RunCmdSilent(L"ipconfig /flushdns");
 }
 
 // -----------------------------------------------------------------------------
@@ -1205,18 +1347,7 @@ bool SystemTweaker::ApplySingleSecurityTweak(const std::string& tweakId, bool va
     }
     else if (tweakId == "blockTelemetryDomains") {
         m_secConfig.blockTelemetryDomains = val;
-        std::wstring hostsPath = L"C:\\Windows\\System32\\drivers\\etc\\hosts";
-        if (val) {
-            std::ofstream hosts(hostsPath, std::ios::app);
-            if (hosts.is_open()) {
-                hosts << "\n# Windows Esports Suite Telemetry Block\n";
-                hosts << "0.0.0.0 vortex.data.microsoft.com\n";
-                hosts << "0.0.0.0 telemetry.microsoft.com\n";
-                hosts << "0.0.0.0 watson.telemetry.microsoft.com\n";
-                hosts << "0.0.0.0 diagnostics.support.microsoft.com\n";
-                hosts.close();
-            }
-        }
+        ApplyHostsTelemetryBlock(val);
         outMsg = val ? "Домены телеметрии заблокированы" : "Блокировка доменов снята";
     }
     else if (tweakId == "disableSecurityCenterNotifications") {
@@ -1251,22 +1382,42 @@ bool SystemTweaker::ApplySingleSecurityTweak(const std::string& tweakId, bool va
     }
     else if (tweakId == "disableCpuMitigations") {
         m_secConfig.disableCpuMitigations = val;
-        // FeatureSettingsOverride = 3, Mask = 3 disables Spectre, Meltdown, Downfall mitigation penalties
-        RegSetDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management", L"FeatureSettingsOverride", val ? 3 : 0);
-        RegSetDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management", L"FeatureSettingsOverrideMask", val ? 3 : 0);
+        // Documented 3/3 pair disables the Meltdown / Spectre-V2 software mitigations. It does NOT cover
+        // every later CPU CVE (e.g. GDS/Downfall has its own bits) — RISKY, but reversible.
+        if (val) {
+            RegSetDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management", L"FeatureSettingsOverride", 3);
+            RegSetDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management", L"FeatureSettingsOverrideMask", 3);
+        } else {
+            // Absence = OS default. Writing 0 left two policy values behind that future builds may reinterpret.
+            RegDeleteVal(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management", L"FeatureSettingsOverride");
+            RegDeleteVal(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management", L"FeatureSettingsOverrideMask");
+        }
         outMsg = val ? "Фиксы Spectre/Meltdown отключены (Максимальный FPS)" : "Безопасность процессора по умолчанию";
     }
     else if (tweakId == "disableVbsHvci") {
         m_secConfig.disableVbsHvci = val;
-        RegSetDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\DeviceGuard", L"EnableVirtualizationBasedSecurity", val ? 0 : 1);
-        RegSetDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\DeviceGuard\\Scenarios\\HypervisorEnforcedCodeIntegrity", L"Enabled", val ? 0 : 1);
-        RegSetDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\DeviceGuard\\Scenarios\\CredentialGuard", L"Enabled", val ? 0 : 1);
+        if (val) {
+            RegSetDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\DeviceGuard", L"EnableVirtualizationBasedSecurity", 0);
+            RegSetDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\DeviceGuard\\Scenarios\\HypervisorEnforcedCodeIntegrity", L"Enabled", 0);
+            RegSetDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\DeviceGuard\\Scenarios\\CredentialGuard", L"Enabled", 0);
+        } else {
+            // Absence is the documented default. Forcing =1 turned VBS on for machines that never had it.
+            RegDeleteVal(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\DeviceGuard", L"EnableVirtualizationBasedSecurity");
+            RegDeleteVal(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\DeviceGuard\\Scenarios\\HypervisorEnforcedCodeIntegrity", L"Enabled");
+            RegDeleteVal(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\DeviceGuard\\Scenarios\\CredentialGuard", L"Enabled");
+        }
         outMsg = val ? "Изоляция ядра (VBS) и HVCI отключены (Прирост IPC в играх)" : "Изоляция ядра (VBS) включена";
     }
     else if (tweakId == "preventEdgeAutorun") {
         m_secConfig.preventEdgeAutorun = val;
-        RegSetDword(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Policies\\Microsoft\\MicrosoftEdge\\Main", L"AllowPrelaunch", val ? 0 : 1);
-        RegSetDword(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Policies\\Microsoft\\MicrosoftEdge\\TabPreloader", L"AllowTabPreloading", val ? 0 : 1);
+        if (val) {
+            RegSetDword(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Policies\\Microsoft\\MicrosoftEdge\\Main", L"AllowPrelaunch", 0);
+            RegSetDword(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Policies\\Microsoft\\MicrosoftEdge\\TabPreloader", L"AllowTabPreloading", 0);
+        } else {
+            // These are legacy EdgeHTML policies, absent by default; delete instead of writing a guessed 1.
+            RegDeleteVal(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Policies\\Microsoft\\MicrosoftEdge\\Main", L"AllowPrelaunch");
+            RegDeleteVal(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Policies\\Microsoft\\MicrosoftEdge\\TabPreloader", L"AllowTabPreloading");
+        }
         outMsg = val ? "Автозапуск Microsoft Edge запрещен" : "Фоновый запуск Edge разрешен";
     }
     else if (tweakId == "hideRealTTL") {
@@ -1276,23 +1427,35 @@ bool SystemTweaker::ApplySingleSecurityTweak(const std::string& tweakId, bool va
     }
     else if (tweakId == "disableBrowserWarnings") {
         m_secConfig.disableBrowserWarnings = val;
-        RegSetDword(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Policies\\Microsoft\\MicrosoftEdge\\PhishingFilter", L"EnabledV9", val ? 0 : 1);
-        RegSetDword(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Policies\\Microsoft\\Windows\\System", L"EnableSmartScreen", val ? 0 : 1);
+        if (val) {
+            RegSetDword(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Policies\\Microsoft\\MicrosoftEdge\\PhishingFilter", L"EnabledV9", 0);
+            RegSetDword(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Policies\\Microsoft\\Windows\\System", L"EnableSmartScreen", 0);
+        } else {
+            // Absence = SmartScreen enabled. Note: the PhishingFilter value is EdgeHTML-era and is not read by
+            // Chromium Edge at all (it uses its own Edge policy); the Windows policy below is the live one.
+            RegDeleteVal(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Policies\\Microsoft\\MicrosoftEdge\\PhishingFilter", L"EnabledV9");
+            RegDeleteVal(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Policies\\Microsoft\\Windows\\System", L"EnableSmartScreen");
+        }
         outMsg = val ? "Предупреждения в браузерах отключены" : "Предупреждения в браузерах включены";
     }
     else if (tweakId == "blockFacebookSync") {
         m_secConfig.blockFacebookSync = val;
-        RegSetDword(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Privacy", L"DisableFacebookSync", val ? 1 : 0);
+        // Undocumented legacy People-app value; no Windows 10/11 component reads it on clean installs.
+        if (val) RegSetDword(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Privacy", L"DisableFacebookSync", 1);
+        else RegDeleteVal(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Privacy", L"DisableFacebookSync");
         outMsg = val ? "Синхронизация контактов Facebook заблокирована" : "Синхронизация Facebook разрешена";
     }
     else if (tweakId == "blockOutlookSync") {
         m_secConfig.blockOutlookSync = val;
-        RegSetDword(HKEY_CURRENT_USER, L"Software\\Policies\\Microsoft\\Office\\16.0\\Outlook\\Options\\General", L"DisableContactSync", val ? 1 : 0);
+        if (val) RegSetDword(HKEY_CURRENT_USER, L"Software\\Policies\\Microsoft\\Office\\16.0\\Outlook\\Options\\General", L"DisableContactSync", 1);
+        else RegDeleteVal(HKEY_CURRENT_USER, L"Software\\Policies\\Microsoft\\Office\\16.0\\Outlook\\Options\\General", L"DisableContactSync");
         outMsg = val ? "Синхронизация контактов Outlook заблокирована" : "Синхронизация Outlook разрешена";
     }
     else if (tweakId == "blockSkypeSync") {
         m_secConfig.blockSkypeSync = val;
-        RegSetDword(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Privacy", L"DisableSkypeSync", val ? 1 : 0);
+        // Undocumented legacy value; kept for UI compatibility only.
+        if (val) RegSetDword(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Privacy", L"DisableSkypeSync", 1);
+        else RegDeleteVal(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Privacy", L"DisableSkypeSync");
         outMsg = val ? "Синхронизация контактов Skype заблокирована" : "Синхронизация Skype разрешена";
     }
     return true;
@@ -1664,7 +1827,7 @@ bool SystemTweaker::ExecuteCleanup(const CleanupOptions& opts, uint64_t& outByte
 
             // Direct parallel clearing of primary channels
             const std::vector<std::wstring> primaryChannels = {
-                L"Application", L"Security", L"System", L"Setup", L"ForwardedEvents"
+                L"Application", L"System"
             };
 
             HMODULE hWevt = LoadLibraryW(L"wevtapi.dll");
@@ -1678,8 +1841,10 @@ bool SystemTweaker::ExecuteCleanup(const CleanupOptions& opts, uint64_t& outByte
             PEvtNextChannelPath pEvtNextChannelPath = hWevt ? (PEvtNextChannelPath)GetProcAddress(hWevt, "EvtNextChannelPath") : nullptr;
             PEvtClose pEvtClose = hWevt ? (PEvtClose)GetProcAddress(hWevt, "EvtClose") : nullptr;
 
+            std::vector<std::thread> clearThreads;
+            clearThreads.reserve(primaryChannels.size());
             for (const auto& ch : primaryChannels) {
-                std::thread([ch, pEvtClearLog]() {
+                clearThreads.emplace_back([ch, pEvtClearLog]() {
                     HANDLE hLog = OpenEventLogW(NULL, ch.c_str());
                     if (hLog) {
                         ClearEventLogW(hLog, NULL);
@@ -1688,11 +1853,11 @@ bool SystemTweaker::ExecuteCleanup(const CleanupOptions& opts, uint64_t& outByte
                     if (pEvtClearLog) {
                         pEvtClearLog(NULL, ch.c_str(), NULL, 0);
                     }
-                }).detach();
+                });
             }
 
             // Fast batch clearing with wevtutil under strict 1.5-second timeout
-            std::wstring wevtBatch = L"wevtutil cl Application & wevtutil cl Security & wevtutil cl System & wevtutil cl Setup & "
+            std::wstring wevtBatch = L"wevtutil cl Application & wevtutil cl System & wevtutil cl Setup & "
                                     L"wevtutil cl ForwardedEvents & "
                                     L"wevtutil cl \"Microsoft-Windows-Diagnostics-Performance/Operational\" & "
                                     L"wevtutil cl \"Microsoft-Windows-TaskScheduler/Operational\" & "
@@ -1708,9 +1873,19 @@ bool SystemTweaker::ExecuteCleanup(const CleanupOptions& opts, uint64_t& outByte
                     DWORD used = 0;
                     while (std::chrono::steady_clock::now() < deadline &&
                            pEvtNextChannelPath(hEnum, (DWORD)chBuf.size(), chBuf.data(), &used)) {
-                        pEvtClearLog(NULL, chBuf.data(), NULL, 0);
+                        // Never clear the Security channel: audit trail must survive a cleanup.
+                        if (_wcsicmp(chBuf.data(), L"Security") != 0) {
+                            pEvtClearLog(NULL, chBuf.data(), NULL, 0);
+                        }
                     }
                     pEvtClose(hEnum);
+                }
+            }
+
+            // Join every per-channel thread before unloading wevtapi.dll
+            for (auto& t : clearThreads) {
+                if (t.joinable()) {
+                    t.join();
                 }
             }
 
@@ -2011,12 +2186,12 @@ bool SystemTweaker::CleanRamWorkingSets(std::string& outMsg) {
 }
 
 bool SystemTweaker::CleanJunkFolders(std::string& outMsg) {
+    wchar_t systemDrive[MAX_PATH] = { 0 };
+    DWORD driveLen = GetEnvironmentVariableW(L"SystemDrive", systemDrive, MAX_PATH);
+    std::wstring drive = (driveLen > 0 && driveLen < MAX_PATH) ? systemDrive : L"C:";
+
     uint64_t freed = 0;
-    freed += DeleteDirectoryFiles(L"C:\\$Windows.~BT", true);
-    freed += DeleteDirectoryFiles(L"C:\\Windows.old", true);
-    freed += DeleteDirectoryFiles(L"C:\\$SysReset", true);
-    freed += DeleteDirectoryFiles(L"C:\\$GetCurrent", true);
-    freed += DeleteDirectoryFiles(L"C:\\ESD", true);
+    freed += DeleteDirectoryFiles(drive + L"\\$SysReset", true);
 
     double mb = (double)freed / (1024.0 * 1024.0);
     char buf[128];
@@ -2092,20 +2267,36 @@ bool SystemTweaker::RevertAllTweaks(std::string& outMsg) {
     m_sysConfig.disableBsodAutoRestart = false;
     m_sysConfig.requireCtrlAltDel = false;
     m_sysConfig.hideUserAccountsOnLogon = false;
+    m_sysConfig.verboseStatus = false;
+    m_sysConfig.allowNetFramework4 = false;
+    m_sysConfig.enableMsiSafeMode = false;
+    m_sysConfig.disableAllEventLogs = false;
+    m_sysConfig.classicPhotoViewer = false;
+    m_sysConfig.powerShellAcceleration = false;
 
     // 3. Revert Security Tweaks
     m_secConfig.disableAllTelemetry = false;
     m_secConfig.disableHiddenMonitoring = false;
     m_secConfig.disableSecurityCenterNotifications = false;
+    m_secConfig.disableExeWarnings = false;
+    m_secConfig.disableDownloadWarnings = false;
+    m_secConfig.disableBrowserWarnings = false;
     m_secConfig.disableUAC = false;
     m_secConfig.disableUsbAutorun = false;
     m_secConfig.disableCpuMitigations = false;
     m_secConfig.disableVbsHvci = false;
     m_secConfig.preventEdgeAutorun = false;
     m_secConfig.hideRealTTL = false;
+    m_secConfig.removeSpyServices = false;
+    m_secConfig.blockTelemetryDomains = false;
+    m_secConfig.blockFacebookSync = false;
+    m_secConfig.blockOutlookSync = false;
+    m_secConfig.blockSkypeSync = false;
 
     ApplySystemTweaks(outMsg);
     ApplySecurityTweaks(outMsg);
+    ApplySingleSecurityTweak("removeSpyServices", false, outMsg);
+    ApplySingleSecurityTweak("blockTelemetryDomains", false, outMsg);
     ApplyAllOsPerfSubTweaks(false, outMsg);
     ApplyAllSsdPerfSubTweaks(false, outMsg);
     ApplyAllTelemetrySubTweaks(false, outMsg);
@@ -2118,11 +2309,9 @@ bool SystemTweaker::RevertAllTweaks(std::string& outMsg) {
 // Sub-tweaks State Detection
 // -----------------------------------------------------------------------------
 void SystemTweaker::DetectOsPerfSubState() {
-    // 1. Ожидание блокировки экрана
-    std::wstring ssActive = RegGetString(HKEY_CURRENT_USER, L"Control Panel\\Desktop", L"ScreenSaveActive");
-    std::wstring ssTimeout = RegGetString(HKEY_CURRENT_USER, L"Control Panel\\Desktop", L"ScreenSaveTimeOut");
+    // 1. Ожидание блокировки экрана (единственный реальный рычаг — политика NoLockScreen)
     DWORD noLock = RegGetDword(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Policies\\Microsoft\\Windows\\Personalization", L"NoLockScreen", 0);
-    m_osPerfSub.waitScreenLock = ((ssActive == L"0" && (ssTimeout == L"0" || ssTimeout.empty())) || (noLock == 1));
+    m_osPerfSub.waitScreenLock = (noLock == 1);
 
     GUID* pActiveScheme = nullptr;
     if (PowerGetActiveScheme(NULL, &pActiveScheme) == ERROR_SUCCESS && pActiveScheme != nullptr) {
@@ -2210,13 +2399,15 @@ void SystemTweaker::DetectSsdPerfSubState() {
     std::wstring bootOpt = RegGetString(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Dfrg\\BootOptimizeFunction", L"Enable");
     m_ssdPerfSub.disableBootDefrag = (bootOpt == L"N" || bootOpt == L"n");
 
-    // 3. Отключить время последнего доступа к файлу и короткие имена 8.3
+    // 3. Отключить время последнего доступа к файлу (8.3 — отдельный твик disable8dot3Names)
     DWORD lastAccess = RegGetDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\FileSystem", L"NtfsDisableLastAccessUpdate", 0);
-    DWORD dot3 = RegGetDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\FileSystem", L"NtfsDisable8dot3NameCreation", 0);
-    m_ssdPerfSub.disableLastAccess = (lastAccess >= 1 || dot3 >= 1);
+    DWORD dot3 = RegGetDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\FileSystem", L"NtfsDisable8dot3NameCreation", 2);
+    // 2/3 are "System Managed" states; only 1 (and 3, disabled by policy) really turn updates off.
+    m_ssdPerfSub.disableLastAccess = (lastAccess == 1 || lastAccess == 3);
+    m_ssdPerfSub.disable8dot3Names = (dot3 == 1);
 
-    // 4. Включить поддержку функции TRIM (NtfsDisableDeleteNotification == 0)
-    DWORD trimDisabled = RegGetDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\FileSystem", L"NtfsDisableDeleteNotification", 0);
+    // 4. Включить поддержку функции TRIM (DisableDeleteNotification == 0)
+    DWORD trimDisabled = RegGetDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\FileSystem", L"DisableDeleteNotification", 0);
     m_ssdPerfSub.enableTrimSupport = (trimDisabled == 0);
 
     // 5. Отключить сообщения о нехватке места на диске
@@ -2227,8 +2418,8 @@ void SystemTweaker::DetectSsdPerfSubState() {
     DWORD pagingExec = RegGetDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management", L"DisablePagingExecutive", 0);
     m_ssdPerfSub.disablePagingExecutive = (pagingExec == 1);
 
-    // 7. Игровой режим кэша файловой системы (LargeSystemCache == 0 для игр и рабочего стола)
-    DWORD sysCache = RegGetDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management", L"LargeSystemCache", 0);
+    // 7. Игровой/настольный режим кэша (LargeSystemCache == 0; серверный режим = 1)
+    DWORD sysCache = RegGetDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management", L"LargeSystemCache", 2);
     m_ssdPerfSub.largeSystemCache = (sysCache == 0);
 
     // 8. Улучшить производительность приложений (Win32PrioritySeparation == 38 / 0x26)
@@ -2258,7 +2449,7 @@ void SystemTweaker::DetectTelemetrySubState() {
     m_telemetrySub.disableVsTelemetry = (telem == 0 && vsSqm == 0);
 
     // 4. Отключить все телеметрии Microsoft Office
-    DWORD offPriv = RegGetDword(HKEY_CURRENT_USER, L"Software\\Policies\\Microsoft\\office\\common\\privacy", L"disconnectedstate", 0);
+    DWORD offPriv = RegGetDword(HKEY_CURRENT_USER, L"Software\\Policies\\Microsoft\\Office\\16.0\\Common\\Privacy", L"DisconnectedState", 0);
     m_telemetrySub.disableOfficeTelemetry = (offPriv == 2);
 
     // 5. Отключить телеметрию NVIDIA
@@ -2277,7 +2468,8 @@ void SystemTweaker::DetectTelemetrySubState() {
             }
             CloseServiceHandle(hSvc);
         } else {
-            m_telemetrySub.disableNvidiaTelemetry = true;
+            // Service row exists only when an NVIDIA driver package is installed; a missing service is not "disabled".
+            m_telemetrySub.disableNvidiaTelemetry = false;
         }
         CloseServiceHandle(scm);
     }
@@ -2348,8 +2540,9 @@ bool SystemTweaker::ApplyOsPerfSubTweak(const std::string& tweakId, bool value, 
             RegSetDword(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Policies\\Microsoft\\Windows\\Personalization", L"NoLockScreen", 1);
             RunCmdSilent(L"powercfg /change standby-timeout-ac 0 & powercfg /change standby-timeout-dc 0");
         } else {
-            RegSetString(HKEY_CURRENT_USER, L"Control Panel\\Desktop", L"ScreenSaveActive", L"1");
-            RegSetString(HKEY_CURRENT_USER, L"Control Panel\\Desktop", L"ScreenSaveTimeOut", L"600");
+            // Windows desktop default: no screen saver, ScreenSaveTimeOut not configured.
+            RegSetString(HKEY_CURRENT_USER, L"Control Panel\\Desktop", L"ScreenSaveActive", L"0");
+            RegDeleteVal(HKEY_CURRENT_USER, L"Control Panel\\Desktop", L"ScreenSaveTimeOut");
             RegDeleteVal(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Policies\\Microsoft\\Windows\\Personalization", L"NoLockScreen");
             RunCmdSilent(L"powercfg /change standby-timeout-ac 30 & powercfg /change standby-timeout-dc 15");
         }
@@ -2394,15 +2587,19 @@ bool SystemTweaker::ApplyOsPerfSubTweak(const std::string& tweakId, bool value, 
     }
     else if (tweakId == "alwaysUnloadDll") {
         m_osPerfSub.alwaysUnloadDll = value;
+        // Legacy Win9x/2000 loader switch (documented under CurrentVersion\Explorer). Ignored since Vista;
+        // kept for UI compatibility. Revert deletes the value, which is the real default.
         if (value) RegSetDword(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer", L"AlwaysUnloadDLL", 1);
         else RegDeleteVal(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer", L"AlwaysUnloadDLL");
         outMsg = value ? "Автоматическая выгрузка неиспользуемых DLL включена" : "Стандартное кэширование DLL";
     }
     else if (tweakId == "nonPagedPoolFix") {
         m_osPerfSub.nonPagedPoolFix = value;
+        // PoolUsageMaximum lowers the *paged* pool trim threshold to 60% (documented MS workaround); the
+        // default when absent is 80. It does not size the non-paged pool (NonPagedPoolSize is ignored on x64).
         if (value) RegSetDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management", L"PoolUsageMaximum", 60);
         else RegDeleteVal(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management", L"PoolUsageMaximum");
-        outMsg = value ? "Фикс утечки памяти невыгружаемого пула применен (60%)" : "Невыгружаемый пул по умолчанию";
+        outMsg = value ? "Порог обрезки пула памяти понижен до 60% (PoolUsageMaximum)" : "Пул памяти по умолчанию";
     }
     else if (tweakId == "disableBackgroundApps") {
         m_osPerfSub.disableBackgroundApps = value;
@@ -2450,28 +2647,26 @@ bool SystemTweaker::ApplyOsPerfSubTweak(const std::string& tweakId, bool value, 
     }
     else if (tweakId == "disableTurboBoostAC") {
         m_osPerfSub.disableTurboBoostAC = value;
-        RunCmdSilent(L"powercfg -attributes 54533251-82be-4824-96c1-47b60b740d00 be337238-0d82-4146-a960-4f3749d470c7 -ATTRIB_HIDE");
         GUID* pActive = nullptr;
         if (PowerGetActiveScheme(NULL, &pActive) == ERROR_SUCCESS && pActive) {
-            PowerWriteACValueIndex(NULL, pActive, &WCS_SUB_PROC, &WCS_PERFBOOST, value ? 0 : 2);
+            PowerWriteACValueIndex(NULL, pActive, &WCS_SUB_PROC, &WCS_PERFBOOST, value ? 0 : 1);
             PowerSetActiveScheme(NULL, pActive);
             LocalFree(pActive);
         }
         RunCmdSilent(value ? L"powercfg -setacvalueindex scheme_current sub_processor PERFBOOSTMODE 0 & powercfg /setactive scheme_current"
-                           : L"powercfg -setacvalueindex scheme_current sub_processor PERFBOOSTMODE 2 & powercfg /setactive scheme_current");
+                           : L"powercfg -setacvalueindex scheme_current sub_processor PERFBOOSTMODE 1 & powercfg /setactive scheme_current");
         outMsg = value ? "Turbo Boost отключен при работе от сети" : "Turbo Boost включен при работе от сети";
     }
     else if (tweakId == "disableTurboBoostDC") {
         m_osPerfSub.disableTurboBoostDC = value;
-        RunCmdSilent(L"powercfg -attributes 54533251-82be-4824-96c1-47b60b740d00 be337238-0d82-4146-a960-4f3749d470c7 -ATTRIB_HIDE");
         GUID* pActive = nullptr;
         if (PowerGetActiveScheme(NULL, &pActive) == ERROR_SUCCESS && pActive) {
-            PowerWriteDCValueIndex(NULL, pActive, &WCS_SUB_PROC, &WCS_PERFBOOST, value ? 0 : 2);
+            PowerWriteDCValueIndex(NULL, pActive, &WCS_SUB_PROC, &WCS_PERFBOOST, value ? 0 : 1);
             PowerSetActiveScheme(NULL, pActive);
             LocalFree(pActive);
         }
         RunCmdSilent(value ? L"powercfg -setdcvalueindex scheme_current sub_processor PERFBOOSTMODE 0 & powercfg /setactive scheme_current"
-                           : L"powercfg -setdcvalueindex scheme_current sub_processor PERFBOOSTMODE 2 & powercfg /setactive scheme_current");
+                           : L"powercfg -setdcvalueindex scheme_current sub_processor PERFBOOSTMODE 1 & powercfg /setactive scheme_current");
         outMsg = value ? "Turbo Boost отключен при работе от батареи" : "Turbo Boost включен при работе от батареи";
     }
     DebugLogger::Get().LogTweak(tweakId, value, outMsg);
@@ -2486,12 +2681,10 @@ bool SystemTweaker::ApplyAllOsPerfSubTweaks(bool enable, std::string& outMsg) {
     ApplyOsPerfSubTweak("ultimatePowerPlan", enable, tmp);
     ApplyOsPerfSubTweak("alwaysUnloadDll", enable, tmp);
     ApplyOsPerfSubTweak("nonPagedPoolFix", enable, tmp);
+    ApplyOsPerfSubTweak("disableBackgroundApps", enable, tmp);
     ApplyOsPerfSubTweak("disableAutoWindowsUpdate", enable, tmp);
     ApplyOsPerfSubTweak("disableDriverUpdates", enable, tmp);
     ApplyOsPerfSubTweak("disableReservedStorage", enable, tmp);
-    // Never disable CPU Turbo Boost in bulk optimizations (preserves max CPU GHz)
-    ApplyOsPerfSubTweak("disableTurboBoostAC", false, tmp);
-    ApplyOsPerfSubTweak("disableTurboBoostDC", false, tmp);
     m_sysConfig.maxOsPerf = enable;
     outMsg = enable ? "Оптимизации производительности ОС применены (с сохранением Turbo Boost)!" : "Оптимизации ОС отменены";
     DEBUG_LOG_SUCCESS("Tweaker", outMsg);
@@ -2507,7 +2700,10 @@ bool SystemTweaker::ApplySsdPerfSubTweak(const std::string& tweakId, bool value,
             RunCmdSilent(L"net stop SysMain & sc config SysMain start= disabled");
         } else {
             RegSetDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management\\PrefetchParameters", L"EnablePrefetcher", 3);
-            RegSetDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management\\PrefetchParameters", L"EnableSuperfetch", 3);
+            // EnableSuperfetch is a legacy XP/Vista-era value; Windows 10/11 clean installs do not have it
+            // (SysMain owns this now), so the real default is "absent" — writing 3 would be a dead key.
+            RegDeleteVal(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management\\PrefetchParameters", L"EnableSuperfetch");
+            // SysMain ships as Automatic on both Windows 10 and 11 (clean-install service defaults).
             RunCmdSilent(L"sc config SysMain start= auto & net start SysMain");
         }
         outMsg = value ? "Prefetcher и Superfetch (SysMain) отключены" : "Prefetcher и Superfetch включены";
@@ -2520,21 +2716,38 @@ bool SystemTweaker::ApplySsdPerfSubTweak(const std::string& tweakId, bool value,
     }
     else if (tweakId == "disableLastAccess") {
         m_ssdPerfSub.disableLastAccess = value;
-        RegSetDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\FileSystem", L"NtfsDisableLastAccessUpdate", value ? 1 : 0);
-        RegSetDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\FileSystem", L"NtfsDisable8dot3NameCreation", value ? 1 : 0);
-        RunCmdSilent(value ? L"fsutil behavior set disablelastaccess 1 & fsutil 8dot3name set 1" : L"fsutil behavior set disablelastaccess 0 & fsutil 8dot3name set 0");
-        outMsg = value ? "Запись меток доступа и создание коротких имен 8.3 отключены (SSD ускорен)" : "Метки последнего доступа и имена 8.3 включены";
+        if (value) {
+            RegSetDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\FileSystem", L"NtfsDisableLastAccessUpdate", 1);
+            RunCmdSilent(L"fsutil behavior set disablelastaccess 1");
+        } else {
+            // Windows 10 1803+ default is "System Managed" (2). Delete = OS default; never write 0 (that
+            // would force timestamp writes on every read, the opposite of the default).
+            RegDeleteVal(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\FileSystem", L"NtfsDisableLastAccessUpdate");
+            RunCmdSilent(L"fsutil behavior set disablelastaccess 2");
+        }
+        outMsg = value ? "Запись меток последнего доступа отключена (SSD ускорен)" : "Метки последнего доступа по умолчанию";
     }
     else if (tweakId == "disable8dot3Names") {
-        RegSetDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\FileSystem", L"NtfsDisable8dot3NameCreation", value ? 1 : 0);
-        RunCmdSilent(value ? L"fsutil 8dot3name set 1" : L"fsutil 8dot3name set 0");
-        outMsg = value ? "Создание коротких имен 8.3 отключено" : "Создание коротких имен 8.3 включено";
+        m_ssdPerfSub.disable8dot3Names = value;
+        if (value) {
+            RegSetDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\FileSystem", L"NtfsDisable8dot3NameCreation", 1);
+            RunCmdSilent(L"fsutil 8dot3name set 1");
+        } else {
+            // Windows default is 2 = per-volume, not 0 = create 8.3 names on every volume.
+            RegSetDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\FileSystem", L"NtfsDisable8dot3NameCreation", 2);
+            RunCmdSilent(L"fsutil 8dot3name set 2");
+        }
+        outMsg = value ? "Создание коротких имен 8.3 отключено" : "Создание коротких имен 8.3 по умолчанию";
     }
     else if (tweakId == "enableTrimSupport") {
         m_ssdPerfSub.enableTrimSupport = value;
-        RegSetDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\FileSystem", L"NtfsDisableDeleteNotification", value ? 0 : 1);
-        RunCmdSilent(value ? L"fsutil behavior set disabledeletenotify 0" : L"fsutil behavior set disabledeletenotify 1");
-        outMsg = value ? "Команда TRIM для SSD активна" : "Поддержка TRIM отключена";
+        // TRIM is a Windows default; this toggle can only guarantee it stays enabled. Previously the "off"
+        // branch wrote DisableDeleteNotification=1, i.e. it silently disabled TRIM on the user's SSD.
+        RegSetDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\FileSystem", L"DisableDeleteNotification", 0);
+        RegSetDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\FileSystem", L"NtfsDisableDeleteNotification", 0);
+        RegSetDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\FileSystem", L"RefsDisableDeleteNotification", 0);
+        RunCmdSilent(L"fsutil behavior set disabledeletenotify 0 & fsutil behavior set disabledeletenotify ReFS 0");
+        outMsg = value ? "Команда TRIM для SSD активна" : "Поддержка TRIM включена (значение Windows по умолчанию)";
     }
     else if (tweakId == "disableLowDiskSpaceChecks") {
         m_ssdPerfSub.disableLowDiskSpaceChecks = value;
@@ -2549,9 +2762,14 @@ bool SystemTweaker::ApplySsdPerfSubTweak(const std::string& tweakId, bool value,
     }
     else if (tweakId == "largeSystemCache") {
         m_ssdPerfSub.largeSystemCache = value;
-        // 0 = Desktop/Gaming mode (conserves RAM for games); 1 = Server mode (filesystem cache expansion)
-        RegSetDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management", L"LargeSystemCache", value ? 0 : 1);
-        outMsg = value ? "Игровой режим LargeSystemCache=0 активен (RAM защищена от вытеснения кэшем файлов)" : "Серверный режим кэша LargeSystemCache=1 включен";
+        // Desktop/gaming cache mode is LargeSystemCache=0; 1 is the server file-cache mode (bad for games).
+        // Absence of the value is the Windows default, so revert deletes it.
+        if (value) {
+            RegSetDword(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management", L"LargeSystemCache", 0);
+        } else {
+            RegDeleteVal(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management", L"LargeSystemCache");
+        }
+        outMsg = value ? "Игровой режим кэша LargeSystemCache=0 включен" : "Кэш файловой системы возвращен по умолчанию";
     }
     else if (tweakId == "win32PrioritySeparation") {
         m_ssdPerfSub.win32PrioritySeparation = value;
@@ -2567,13 +2785,14 @@ bool SystemTweaker::ApplyAllSsdPerfSubTweaks(bool enable, std::string& outMsg) {
     ApplySsdPerfSubTweak("disablePrefetchSuperfetch", enable, tmp);
     ApplySsdPerfSubTweak("disableBootDefrag", enable, tmp);
     ApplySsdPerfSubTweak("disableLastAccess", enable, tmp);
+    ApplySsdPerfSubTweak("disable8dot3Names", enable, tmp);
     ApplySsdPerfSubTweak("enableTrimSupport", enable, tmp);
     ApplySsdPerfSubTweak("disableLowDiskSpaceChecks", enable, tmp);
     ApplySsdPerfSubTweak("disablePagingExecutive", enable, tmp);
     ApplySsdPerfSubTweak("largeSystemCache", enable, tmp);
     ApplySsdPerfSubTweak("win32PrioritySeparation", enable, tmp);
     m_sysConfig.maxSsdPerf = enable;
-    outMsg = enable ? "Все 8 оптимизаций SSD применены!" : "Все 8 оптимизаций SSD отменены";
+    outMsg = enable ? "Все 9 оптимизаций SSD применены!" : "Все 9 оптимизаций SSD отменены";
     DEBUG_LOG_SUCCESS("Tweaker", outMsg);
     return true;
 }
@@ -2615,12 +2834,12 @@ bool SystemTweaker::ApplyTelemetrySubTweak(const std::string& tweakId, bool valu
     else if (tweakId == "disableOfficeTelemetry") {
         m_telemetrySub.disableOfficeTelemetry = value;
         if (value) {
-            RegSetDword(HKEY_CURRENT_USER, L"Software\\Policies\\Microsoft\\office\\common\\privacy", L"disconnectedstate", 2);
+            RegSetDword(HKEY_CURRENT_USER, L"Software\\Policies\\Microsoft\\Office\\16.0\\Common\\Privacy", L"DisconnectedState", 2);
             RegSetDword(HKEY_CURRENT_USER, L"Software\\Policies\\Microsoft\\office\\16.0\\common\\feedback", L"enabled", 0);
             RegSetDword(HKEY_CURRENT_USER, L"Software\\Policies\\Microsoft\\office\\16.0\\osm", L"enablelogging", 0);
             RegSetDword(HKEY_CURRENT_USER, L"Software\\Policies\\Microsoft\\office\\16.0\\osm", L"enableupload", 0);
         } else {
-            RegDeleteVal(HKEY_CURRENT_USER, L"Software\\Policies\\Microsoft\\office\\common\\privacy", L"disconnectedstate");
+            RegDeleteVal(HKEY_CURRENT_USER, L"Software\\Policies\\Microsoft\\Office\\16.0\\Common\\Privacy", L"DisconnectedState");
             RegDeleteVal(HKEY_CURRENT_USER, L"Software\\Policies\\Microsoft\\office\\16.0\\common\\feedback", L"enabled");
             RegDeleteVal(HKEY_CURRENT_USER, L"Software\\Policies\\Microsoft\\office\\16.0\\osm", L"enablelogging");
             RegDeleteVal(HKEY_CURRENT_USER, L"Software\\Policies\\Microsoft\\office\\16.0\\osm", L"enableupload");
@@ -2629,14 +2848,14 @@ bool SystemTweaker::ApplyTelemetrySubTweak(const std::string& tweakId, bool valu
     }
     else if (tweakId == "disableNvidiaTelemetry") {
         m_telemetrySub.disableNvidiaTelemetry = value;
+        // schtasks does not expand wildcards in /TN, so the old NvTm* calls always failed with
+        // ERROR_FILE_NOT_FOUND. Get-ScheduledTask does support name filtering.
         if (value) {
             RunCmdSilent(L"sc stop NvTelemetryContainer & sc config NvTelemetryContainer start= disabled");
-            RunCmdSilent(L"schtasks /change /tn \"NvTmMon*\" /disable >nul 2>&1");
-            RunCmdSilent(L"schtasks /change /tn \"NvTmRep*\" /disable >nul 2>&1");
+            RunCmdSilent(L"powershell.exe -NoProfile -Command \"Get-ScheduledTask | Where-Object { $_.TaskName -like 'NvTm*' } | Disable-ScheduledTask -ErrorAction SilentlyContinue\"");
         } else {
             RunCmdSilent(L"sc config NvTelemetryContainer start= auto & sc start NvTelemetryContainer");
-            RunCmdSilent(L"schtasks /change /tn \"NvTmMon*\" /enable >nul 2>&1");
-            RunCmdSilent(L"schtasks /change /tn \"NvTmRep*\" /enable >nul 2>&1");
+            RunCmdSilent(L"powershell.exe -NoProfile -Command \"Get-ScheduledTask | Where-Object { $_.TaskName -like 'NvTm*' } | Enable-ScheduledTask -ErrorAction SilentlyContinue\"");
         }
         outMsg = value ? "Телеметрия NVIDIA GPU заблокирована" : "Службы телеметрии NVIDIA активны";
     }
@@ -2757,8 +2976,11 @@ bool SystemTweaker::ApplyAllTelemetrySubTweaks(bool enable, std::string& outMsg)
     ApplyTelemetrySubTweak("disableSpeechModelUpdate", enable, tmp);
     ApplyTelemetrySubTweak("disableExperiments", enable, tmp);
     ApplyTelemetrySubTweak("disableAutoLoggerDiagTrack", enable, tmp);
+    // The hosts block existed but nothing ever called it: the caption promised
+    // "all telemetry blocked" while the domains stayed reachable.
+    ApplyTelemetrySubTweak("blockTelemetryDomains", enable, tmp);
     m_secConfig.disableAllTelemetry = enable;
-    outMsg = enable ? "Все 15 телеметрий Windows и Office полностью заблокированы!" : "Параметры телеметрии сброшены";
+    outMsg = enable ? "Телеметрия Windows, Office и NVIDIA отключена, домены заблокированы в hosts" : "Параметры телеметрии сброшены";
     DEBUG_LOG_SUCCESS("Tweaker", outMsg);
     return true;
 }

@@ -263,7 +263,24 @@ void StartupManager::ScanRegistryKey(HKEY hRoot, const std::wstring& subKey, con
     BYTE valData[4096] = { 0 };
     DWORD valDataLen = sizeof(valData);
 
-    while (RegEnumValueW(hKey, index, valName, &valNameLen, nullptr, &type, valData, &valDataLen) == ERROR_SUCCESS) {
+    for (;;) {
+        // Buffer capacities must be re-armed on every iteration (the API overwrites them)
+        valNameLen = ARRAYSIZE(valName);
+        valDataLen = sizeof(valData);
+
+        LONG enumRes = RegEnumValueW(hKey, index, valName, &valNameLen, nullptr, &type, valData, &valDataLen);
+        if (enumRes == ERROR_NO_MORE_ITEMS) {
+            break;
+        }
+        if (enumRes == ERROR_MORE_DATA) {
+            // Oversized value: skip this entry and keep enumerating
+            index++;
+            continue;
+        }
+        if (enumRes != ERROR_SUCCESS) {
+            break;
+        }
+
         if (type == REG_SZ || type == REG_EXPAND_SZ) {
             std::wstring cmd = (wchar_t*)valData;
             std::wstring rawName = valName;
@@ -285,7 +302,10 @@ void StartupManager::ScanRegistryKey(HKEY hRoot, const std::wstring& subKey, con
             }
             item.id = prefix + utf8Name;
 
-            item.enabled = CheckApprovedState(hRoot, approvedSubKey, rawName, extraSam);
+            // StartupApproved is always read through the native view: the 32-bit
+            // Run key has its own "Run32" subkey, so KEY_WOW64_32KEY here points
+            // the redirector at a non-existent path and the state reads as enabled.
+            item.enabled = CheckApprovedState(hRoot, approvedSubKey, rawName, 0);
 
             std::wstring resolvedExe;
             ResolveExecutable(cmd, resolvedExe, item.publisher, item.exists);
@@ -294,10 +314,6 @@ void StartupManager::ScanRegistryKey(HKEY hRoot, const std::wstring& subKey, con
         }
 
         index++;
-        valNameLen = ARRAYSIZE(valName);
-        valDataLen = sizeof(valData);
-        memset(valName, 0, sizeof(valName));
-        memset(valData, 0, sizeof(valData));
     }
 }
 
@@ -414,8 +430,8 @@ void StartupManager::ScanItemsLocked() {
                     L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run",
                     StartupItem::LocationType::HKLM_Run, "HKLM Run");
 
-    // 3. HKLM (32-bit)
-    ScanRegistryKey(HKEY_LOCAL_MACHINE, L"Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Run",
+    // 3. HKLM (32-bit) - KEY_WOW64_32KEY redirects to WOW6432Node, so the path stays native
+    ScanRegistryKey(HKEY_LOCAL_MACHINE, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
                     L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run32",
                     StartupItem::LocationType::HKLM_Run32, "HKLM (32-bit)", KEY_WOW64_32KEY);
 
@@ -540,9 +556,9 @@ nlohmann::json StartupManager::ToggleItem(const std::string& id, bool enabled) {
         std::wstring approvedSubKey = (it->locType == StartupItem::LocationType::HKLM_Run32) ?
             L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run32" :
             L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run";
-        DWORD extraSam = (it->locType == StartupItem::LocationType::HKLM_Run32) ? KEY_WOW64_32KEY : 0;
 
-        success = SetApprovedState(hRoot, approvedSubKey, it->regValueName, enabled, extraSam);
+        // StartupApproved always lives in the native 64-bit view
+        success = SetApprovedState(hRoot, approvedSubKey, it->regValueName, enabled, 0);
         if (success) {
             it->enabled = enabled;
         }
@@ -611,13 +627,19 @@ nlohmann::json StartupManager::DeleteItem(const std::string& id) {
             L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run";
         DWORD extraSam = (it->locType == StartupItem::LocationType::HKLM_Run32) ? KEY_WOW64_32KEY : 0;
 
-        RegDeleteVal(hRoot, subKey, it->regValueName, extraSam);
-        RegDeleteVal(hRoot, approvedSubKey, it->regValueName, extraSam);
+        bool runDeleted = RegDeleteVal(hRoot, subKey, it->regValueName, extraSam);
+
+        // StartupApproved is always removed through the native 64-bit view
+        LONG approvedRes = ERROR_FILE_NOT_FOUND;
+        ScopedHKey hApproved;
+        if (RegOpenKeyExW(hRoot, approvedSubKey.c_str(), 0, KEY_SET_VALUE, hApproved.put()) == ERROR_SUCCESS) {
+            approvedRes = RegDeleteValueW(hApproved, it->regValueName.c_str());
+        }
 
         if (hRoot == HKEY_LOCAL_MACHINE) {
             RegDeleteVal(HKEY_CURRENT_USER, approvedSubKey, it->regValueName);
         }
-        success = true;
+        success = runDeleted && (approvedRes == ERROR_SUCCESS || approvedRes == ERROR_FILE_NOT_FOUND);
     }
 
     if (success) {

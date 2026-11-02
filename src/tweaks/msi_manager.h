@@ -25,7 +25,7 @@ public:
 
     void ScanDevices();
     nlohmann::json GetDevicesJson();
-    bool SetMsiEnabled(const std::string& id, bool enabled, std::string& outMsg);
+    bool SetMsiEnabled(const std::string& id, bool enabled, std::string& outMsg, bool confirmUnsupported = false);
     bool SetDevicePriority(const std::string& id, int priority, std::string& outMsg);
     bool ApplyRecommendedEsportsProfile(std::string& outMsg);
     bool IsCategoryMsiEnabled(const std::string& category);

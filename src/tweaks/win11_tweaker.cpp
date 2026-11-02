@@ -144,8 +144,6 @@ void Win11Tweaker::DetectState() {
                 DWORD size = sizeof(val);
                 if (RegQueryValueExW(hKey, L"", nullptr, nullptr, (LPBYTE)val, &size) == ERROR_SUCCESS) {
                     ok = (val[0] == L'\0');
-                } else {
-                    ok = true;
                 }
                 RegCloseKey(hKey);
             }
@@ -159,8 +157,8 @@ void Win11Tweaker::DetectState() {
         }
         else if (it.id == "win11Recall") {
             DWORD v1 = 0, v2 = 0;
-            bool b1 = RegGetDword(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Policies\\Microsoft\\Windows\\Windows AI", L"DisableAIDataAnalysis", v1) && (v1 == 1);
-            bool b2 = RegGetDword(HKEY_CURRENT_USER, L"Software\\Policies\\Microsoft\\Windows\\Windows AI", L"DisableAIDataAnalysis", v2) && (v2 == 1);
+            bool b1 = RegGetDword(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsAI", L"DisableAIDataAnalysis", v1) && (v1 == 1);
+            bool b2 = RegGetDword(HKEY_CURRENT_USER, L"Software\\Policies\\Microsoft\\Windows\\WindowsAI", L"DisableAIDataAnalysis", v2) && (v2 == 1);
             it.enabled = (b1 || b2);
         }
         else if (it.id == "win11BingSearch") {
@@ -174,11 +172,11 @@ void Win11Tweaker::DetectState() {
             it.enabled = RegGetDword(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced", L"Start_IrisRecommendations", val) && (val == 0);
         }
         else if (it.id == "win11Widgets") {
-            DWORD v1 = 1, v2 = 1, v3 = 1;
-            bool b1 = RegGetDword(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Policies\\Microsoft\\Dsh", L"AllowNewsAndInterests", v1) && (v1 == 0);
-            bool b2 = RegGetDword(HKEY_CURRENT_USER, L"Software\\Policies\\Microsoft\\Dsh", L"AllowNewsAndInterests", v2) && (v2 == 0);
-            bool b3 = RegGetDword(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced", L"TaskbarDa", v3) && (v3 == 0);
-            it.enabled = (b1 || b2 || b3);
+            // AllowNewsAndInterests is a device policy (COMPUTER\SOFTWARE\Policies\Microsoft\Dsh);
+            // it is the value that actually turns the widgets feature off. An HKCU mirror is not
+            // honoured by Windows and must not count as "applied".
+            DWORD v1 = 1;
+            it.enabled = RegGetDword(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Policies\\Microsoft\\Dsh", L"AllowNewsAndInterests", v1) && (v1 == 0);
         }
         else if (it.id == "win11ConsumerBloat") {
             DWORD val = 0;
@@ -230,7 +228,16 @@ bool Win11Tweaker::ToggleTweak(const std::string& id, bool enabled) {
 }
 
 bool Win11Tweaker::ToggleTweak(const std::string& id, bool enabled, std::string& outMsg) {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    std::unique_lock<std::mutex> lock(m_mutex);
+
+    if (!m_isWindows11) {
+        for (const auto& item : m_items) {
+            if (item.id == id && item.isWin11Only) {
+                outMsg = "Твик \"" + item.name + "\" доступен только в Windows 11 (сборка 22000+). Текущая сборка: " + std::to_string(m_buildNumber);
+                return false;
+            }
+        }
+    }
 
     bool handled = false;
     if (id == "win11ClassicMenu") {
@@ -263,12 +270,12 @@ bool Win11Tweaker::ToggleTweak(const std::string& id, bool enabled, std::string&
     }
     else if (id == "win11Recall") {
         if (enabled) {
-            RegSetDword(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Policies\\Microsoft\\Windows\\Windows AI", L"DisableAIDataAnalysis", 1);
-            RegSetDword(HKEY_CURRENT_USER, L"Software\\Policies\\Microsoft\\Windows\\Windows AI", L"DisableAIDataAnalysis", 1);
+            RegSetDword(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsAI", L"DisableAIDataAnalysis", 1);
+            RegSetDword(HKEY_CURRENT_USER, L"Software\\Policies\\Microsoft\\Windows\\WindowsAI", L"DisableAIDataAnalysis", 1);
             outMsg = "Windows Recall заблокирован (DisableAIDataAnalysis = 1)";
         } else {
-            RegDeleteVal(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Policies\\Microsoft\\Windows\\Windows AI", L"DisableAIDataAnalysis");
-            RegDeleteVal(HKEY_CURRENT_USER, L"Software\\Policies\\Microsoft\\Windows\\Windows AI", L"DisableAIDataAnalysis");
+            RegDeleteVal(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsAI", L"DisableAIDataAnalysis");
+            RegDeleteVal(HKEY_CURRENT_USER, L"Software\\Policies\\Microsoft\\Windows\\WindowsAI", L"DisableAIDataAnalysis");
             outMsg = "Windows Recall восстановлен по умолчанию";
         }
         handled = true;
@@ -293,24 +300,24 @@ bool Win11Tweaker::ToggleTweak(const std::string& id, bool enabled, std::string&
             RegSetDword(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager", L"SystemPaneSuggestionsEnabled", 0);
             outMsg = "Реклама и рекомендации в меню «Пуск» отключены (Start_IrisRecommendations = 0)";
         } else {
-            RegSetDword(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced", L"Start_IrisRecommendations", 1);
-            RegSetDword(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager", L"SubscribedContent-338388Enabled", 1);
-            RegSetDword(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager", L"SubscribedContent-338389Enabled", 1);
-            RegSetDword(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager", L"SystemPaneSuggestionsEnabled", 1);
-            outMsg = "Рекомендации в меню «Пуск» включены";
+            RegDeleteVal(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced", L"Start_IrisRecommendations");
+            RegDeleteVal(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager", L"SubscribedContent-338388Enabled");
+            RegDeleteVal(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager", L"SubscribedContent-338389Enabled");
+            RegDeleteVal(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager", L"SystemPaneSuggestionsEnabled");
+            outMsg = "Рекомендации в меню «Пуск» возвращены по умолчанию";
         }
         handled = true;
     }
     else if (id == "win11Widgets") {
         if (enabled) {
             RegSetDword(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Policies\\Microsoft\\Dsh", L"AllowNewsAndInterests", 0);
-            RegSetDword(HKEY_CURRENT_USER, L"Software\\Policies\\Microsoft\\Dsh", L"AllowNewsAndInterests", 0);
             RegSetDword(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced", L"TaskbarDa", 0);
             outMsg = "Панель виджетов и Widgets.exe отключены (AllowNewsAndInterests = 0)";
         } else {
             RegDeleteVal(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Policies\\Microsoft\\Dsh", L"AllowNewsAndInterests");
+            // Legacy cleanup: older builds of this tool wrote a non-policy HKCU mirror.
             RegDeleteVal(HKEY_CURRENT_USER, L"Software\\Policies\\Microsoft\\Dsh", L"AllowNewsAndInterests");
-            RegSetDword(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced", L"TaskbarDa", 1);
+            RegDeleteVal(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced", L"TaskbarDa");
             outMsg = "Панель виджетов включена";
         }
         handled = true;
@@ -343,16 +350,27 @@ bool Win11Tweaker::ToggleTweak(const std::string& id, bool enabled, std::string&
         return false;
     }
 
-    for (auto& item : m_items) {
+    // Re-read the registry after applying: the item state must reflect what is
+    // actually stored, otherwise a denied/silently failed write is reported as success.
+    lock.unlock();
+    DetectState();
+    lock.lock();
+
+    bool applied = false;
+    for (const auto& item : m_items) {
         if (item.id == id) {
-            item.enabled = enabled;
+            applied = (item.enabled == enabled);
             break;
         }
     }
 
+    if (!applied) {
+        outMsg += " (не применено: состояние реестра не изменилось)";
+    }
+
     SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
-    DebugLogger::Get().LogTweak(id, enabled, outMsg);
-    return true;
+    DebugLogger::Get().LogTweak(id, applied, outMsg);
+    return applied;
 }
 
 bool Win11Tweaker::RegSetDword(HKEY hRoot, const std::wstring& subKey, const std::wstring& valName, DWORD val) {
