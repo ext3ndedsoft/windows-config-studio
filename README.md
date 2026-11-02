@@ -162,10 +162,16 @@ cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DWCS_DEBUG_CONSOLE=ON
 
 ```powershell
 # поднять версию, собрать и поставить тег
-powershell -File scripts\release.ps1 -Version 3.7 -Tag -Push
+powershell -File scripts\release.ps1 -Version 3.7 -Tag
 ```
 
-Тег `v*` запускает [`.github/workflows/release.yml`](.github/workflows/release.yml): сборка на `windows-latest`, публикация `WCS-<версия>.exe` и SHA256 в GitHub Releases. Встроенная проверка обновлений смотрит на последний релиз этого репозитория.
+Скрипт собирает бинарник, обновляет `app_version.h` и `CMakeLists.txt`, ставит тег и публикует релиз с хешем SHA256. Встроенная проверка обновлений смотрит на последний релиз этого репозитория через GitHub API, поэтому тег и заголовок релиза должны начинаться с номера версии (`3.7` / `WCS v3.7`).
+
+В `.github/workflows` лежат два готовых workflow — сборка на каждый push и публикация релиза по тегу. Для их публикации требуется токен со scope `workflow`:
+
+```powershell
+gh auth refresh -s workflow
+```
 
 <br>
 
