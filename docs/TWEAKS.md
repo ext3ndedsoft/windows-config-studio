@@ -17,14 +17,14 @@
 |------|----------|--------|
 | `timerResolution05ms` | `NtSetTimerResolution(5000, TRUE)` — повышает разрешение системного таймера до 0.5 мс | РАБОТАЕТ (действует, пока приложение запущено) |
 | `win32PrioritySeparation` | `HKLM\SYSTEM\CurrentControlSet\Control\PriorityControl` = `0x26` (кванты под игры), откат `0x2` | РАБОТАЕТ |
-| `mmcssGamesPriority` | `SystemResponsiveness=0` + задачи `Games`: `GPU Priority=8`, `Priority=6` | РАБОТАЕТ |
-| `disableDynamicTick` | `bcdedit /set disabledynamictick yes` | РАБОТАЕТ, требует перезагрузки |
-| `usePlatformClock` / `usePlatformTick` | `bcdedit /set useplatformclock yes|no` | РАБОТАЕТ, но эффект на разных платформах разный вплоть до отрицательного |
+| `mmcssGamesPriority` | `SystemResponsiveness=0` + задачи `Games`: `GPU Priority=8`, `Priority=6` | НЕ РЕКОМЕНДУЕТСЯ: класс `High` отбирает время у звука, сети и диска. С 3.6.2 не входит в пресеты, остаётся ручным |
+| `disableDynamicTick` | `bcdedit /set disabledynamictick yes` | ВРЕДНО на Zen 3 / Alder Lake+: повышает DPC-латентность. С 3.6.2 не входит в пресеты, остаётся ручным |
+| `usePlatformClock` / `usePlatformTick` | `bcdedit /set useplatformclock yes|no` | Эффект на разных платформах разный вплоть до отрицательного. С 3.6.2 не входит в пресеты |
 | `disableCoreParking` | `powercfg` — `CPMINCORES=100%` | РАБОТАЕТ |
 | `disablePowerThrottling` | `PowerThrottlingOff=1` | РАБОТАЕТ |
 | `disableCpuMitigations` | `FeatureSettingsOverride/OverrideMask` (Meltdown/Spectre-V2) | РИСК: снижает защиту, не отключает более поздние CVE |
-| `disableVbsHvci` | `DeviceGuard` + `HypervisorEnforcedCodeIntegrity` = 0 | РИСК: отключает VBS/HVCI, нужно для некоторых читов и виртуалок |
-| `ultimatePowerPlan` | дублирует схему Ultimate Performance, откат — Balanced | РАБОТАЕТ |
+| `disableVbsHvci` | `DeviceGuard` + `HypervisorEnforcedCodeIntegrity` = 0 | РИСК: отключает VBS/HVCI, ломает WSL2, Hyper-V, Docker и эмуляторы. Входит в Max Performance с 3.6.2 |
+| `ultimatePowerPlan` | дублирует схему Ultimate Performance, откат — Balanced | РАБОТАЕТ. С 3.6.2 пресеты его не применяют, только ручной переключатель |
 
 ## Память
 

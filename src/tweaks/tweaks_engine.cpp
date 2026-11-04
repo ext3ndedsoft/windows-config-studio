@@ -1416,10 +1416,14 @@ bool TweaksEngine::ApplyPreset(PresetType preset, std::string& outStatus) {
         // Win32 priority 0x26, unparked cores, Power Throttling off, 100% Anti-Cheat Safe
         // -------------------------------------------------------------
         m_state.timerResolution05ms = true;
-        m_state.disableDynamicTick = true;
-        m_state.usePlatformClockNo = true;
-        m_state.usePlatformTick = true;
-        m_state.usePlatformTickNo = true;
+        // BCD timer tweaks are no longer part of the preset (3.6.2). disabledynamictick
+        // and useplatformclock were cargo-culted from 2016-era guides: on Zen 3 and
+        // Alder Lake+ they are placebos at best, and disabling the dynamic tick
+        // measurably raises DPC latency and stutter. Both remain manual toggles.
+        m_state.disableDynamicTick = false;
+        m_state.usePlatformClockNo = false;
+        m_state.usePlatformTick = false;
+        m_state.usePlatformTickNo = false;
         m_state.bootuxDisabled = true;
         m_state.win32PrioritySeparation = true;
         m_state.win32PriorityValue = 0x26; // 38 dec: variable, short quantum, 2:1 foreground boost
@@ -1437,7 +1441,11 @@ bool TweaksEngine::ApplyPreset(PresetType preset, std::string& outStatus) {
         m_state.csrssDwmPriority = false; // Not applied: process priority hacks on csrss/dwm are unstable
         m_state.disableGameDVR = true;     // GameDVR & Game Bar disabled
         m_state.disableFullscreenOptimizations = true; // FSO bypass
-        m_state.mmcssGamesPriority = true; // SystemResponsiveness = 0
+        // MMCSS stays at Windows defaults. SystemResponsiveness=0 plus the High/High
+        // scheduling class starves audio, network and disk threads instead of helping
+        // games: measured on a 5600X it cost more frames than it gained, and the
+        // foreground boost is already handled by Win32PrioritySeparation=0x26.
+        m_state.mmcssGamesPriority = false;
         m_state.disableNetworkThrottling = true; // NetworkThrottlingIndex = 0xFFFFFFFF
         m_state.tcpNoDelay = true;         // TCPNoDelay = 1, TcpAckFrequency = 1
         m_state.tcpAckFrequency = true;
@@ -1463,7 +1471,9 @@ bool TweaksEngine::ApplyPreset(PresetType preset, std::string& outStatus) {
         std::string dummy;
 
         // OS Performance Sub-Tweaks
-        sysTweaker.ApplyOsPerfSubTweak("ultimatePowerPlan", true, dummy);
+        // The code used to apply the Ultimate plan here even though the comment above
+        // promised to leave power settings alone. It is a manual toggle now.
+        sysTweaker.ApplyOsPerfSubTweak("ultimatePowerPlan", false, dummy);
         sysTweaker.ApplyOsPerfSubTweak("disablePowerThrottling", true, dummy);
         sysTweaker.ApplySingleSystemTweak("disablePowerThrottling", true, dummy);
         sysTweaker.ApplyOsPerfSubTweak("disableBackgroundApps", false, dummy);
@@ -1494,6 +1504,14 @@ bool TweaksEngine::ApplyPreset(PresetType preset, std::string& outStatus) {
         sysTweaker.ApplySingleSecurityTweak("disableHiddenMonitoring", true, dummy);
         sysTweaker.ApplySingleSecurityTweak("removeSpyServices", true, dummy);
 
+        // VBS / HVCI off. Memory integrity costs roughly 5-10% CPU throughput on Zen 3
+        // and is the single biggest software-side FPS loss on a stock Windows install
+        // since 2022. It is the accepted trade for a preset that promises maximum
+        // frames: the cost is that WSL2, Hyper-V, Docker and Android emulators stop
+        // working until it is switched back on. Reboot required.
+        sysTweaker.ApplySingleSecurityTweak("disableVbsHvci", true, dummy);
+        sysTweaker.GetSecurityConfig().disableVbsHvci = true;
+
         // System Services (Disable recommended bloatware services)
         sysTweaker.DisableRecommendedServices(dummy);
 
@@ -1507,7 +1525,7 @@ bool TweaksEngine::ApplyPreset(PresetType preset, std::string& outStatus) {
         sysTweaker.DetectTelemetrySubState();
         sysTweaker.RefreshServiceStates();
 
-        outStatus = "Пресет «Competitive Games» применён: таймер 0.5 мс, кванты 0x26, MMCSS, TCPNoDelay, ядра разпаркованы. Перезагрузка нужна для BCD-параметров.";
+        outStatus = "Пресет «Competitive Games» применён: таймер 0.5 мс, кванты 0x26, VBS/HVCI выключены, MMCSS по умолчанию, TCPNoDelay. Перезагрузка нужна, чтобы отключился гипервизор.";
         DEBUG_LOG_SUCCESS("TweaksEngine", outStatus);
         return true;
     } else if (preset == PresetType::CompetitiveGaming) {
@@ -1519,9 +1537,10 @@ bool TweaksEngine::ApplyPreset(PresetType preset, std::string& outStatus) {
         // -------------------------------------------------------------
         m_state.timerResolution05ms = true;  // 0.500 ms active for low input latency
         m_state.disableDynamicTick = false; // preserve default dynamic tick for balanced stability
-        m_state.usePlatformClockNo = true;  // safe synthetic HPET off
-        m_state.usePlatformTick = true;
-        m_state.usePlatformTickNo = true;
+        // BCD timer tweaks stay manual since 3.6.2, same reason as in Esports Ultra.
+        m_state.usePlatformClockNo = false;
+        m_state.usePlatformTick = false;
+        m_state.usePlatformTickNo = false;
         m_state.bootuxDisabled = false;
         m_state.win32PrioritySeparation = true;
         m_state.win32PriorityValue = 0x26;  // 0x26 foreground priority boost
@@ -1535,7 +1554,7 @@ bool TweaksEngine::ApplyPreset(PresetType preset, std::string& outStatus) {
         m_state.csrssDwmPriority = false;  // Discord / OBS overlay safe & Anti-Cheat safe
         m_state.disableGameDVR = true;     // disable background game DVR recording
         m_state.disableFullscreenOptimizations = true; // tuned FSO
-        m_state.mmcssGamesPriority = true; // SystemResponsiveness = 0
+        m_state.mmcssGamesPriority = false; // MMCSS untouched: defaults beat the High/0 combo
         m_state.disableNetworkThrottling = true; // NetworkThrottlingIndex = 0xFFFFFFFF
         m_state.tcpNoDelay = true;         // TCPNoDelay = 1, TcpAckFrequency = 1
         m_state.tcpAckFrequency = true;
